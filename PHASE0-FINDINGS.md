@@ -1,8 +1,10 @@
 # Phase 0 — evidence spike findings
 
 **Measured:** 2026-08-03, against the live Companies House developer specs, the download service
-and the API host itself.
-**Status:** desk-measurable half COMPLETE. Live-response half BLOCKED on an API key.
+and the live API.
+**Status:** COMPLETE. Both halves measured. Reproduce with
+`CH_API_KEY=... python3 scripts/probe-companies-house.py` (~45 calls, prints a verdict per
+finding).
 
 Everything below is a measured fact with the probe that produced it, in the `realm-gov-au` house
 style. Facts that contradict an assumption in [DIRECTOR-WEB.md](DIRECTOR-WEB.md) or
@@ -213,25 +215,122 @@ The public service resolves company-scoped paths cleanly, so the evidence drawer
 link" is a template, not a lookup. Officer-scoped deep links follow `/officers/{officer_id}/appointments`
 on the same host and must be confirmed with a real officer id once a key exists.
 
-## Live-probe list (blocked on the key)
+## 8. LIVE: `officer_id` is already a merge — and `person_number` adds nothing
+
+This was the highest-value question, and the answer inverts the assumption behind it.
+
+`person_number` is a 12-digit value with internal structure: an 8-digit **prefix** and a 4-digit
+**suffix**. Measured over 854 officer entries across 20 companies (713 distinct officer records):
+
+| Relationship | Result |
+|---|---|
+| prefix → officer_id | **1:1** — 0 prefixes span more than one officer id |
+| officer_id → prefix | **1:1** — all 713 officer ids sit under exactly one prefix |
+| officer_id → person_number | **1:many** — 9 of 713 (1.3%) span two or more, differing only in suffix |
+
+Confirmed on a single officer directly: 24 appointments across 8 sampled companies returned one
+prefix but **two** person_numbers (`…0001` and `…0002`), with the officer-appointments endpoint
+returning all of them under one officer id.
+
+The model is therefore: **prefix = the natural person, suffix = one underlying register record,
+`officer_id` = Companies House's own aggregation of every record sharing a prefix.**
+
+> **Consequence 1 — duplicate detection stays attribute-based.** Since prefix and `officer_id`
+> are 1:1, `person_number` carries no information `officer_id` does not already carry. It cannot
+> upgrade the level-4 "possible same person" view. Design that view as originally specified
+> (attribute comparison, candidates listed, never merged, never counted), and keep
+> `person_number` only as the join key to the paid bulk products.
+>
+> **Consequence 2 — the product's identity honesty needs restating, and this matters more.**
+> DIRECTOR-WEB.md and ARCHITECTURE.md both treat a Companies House officer record as the raw,
+> unmerged atom: *"`UkOfficerRecord` — one Companies House officer identifier, not automatically
+> a natural person"*, with the product promising never to merge. But `officer_id` **is itself a
+> merge**, performed upstream by Companies House, of several underlying register records — in
+> 1.3% of records observed here. The product cannot claim to present unmerged raw records while
+> its atom is a supplied judgment.
+>
+> The fix is honesty, not avoidance: keep `officer_id` as the identity key (there is no
+> finer-grained alternative exposed on the officer-anchored path anyway), and state plainly in
+> the methodology and the passport that the officer record is Companies House's own grouping of
+> register entries. Where an officer record spans multiple `person_number`s, that is disclosable
+> provenance — the record's own composition — and it belongs in the evidence drawer. This
+> *strengthens* the product's honesty claim rather than weakening it, because it stops the app
+> asserting a purity it does not have.
+
+## 9. LIVE: appointment identity is asymmetric by approach path
+
+The same appointment has an id when reached from the company, and none when reached from the
+officer:
+
+- **Company-anchored** (`GET /company/{n}/officers`) — each item's `links.self` is
+  `/company/{n}/appointments/{appointment_id}`, and that URL resolves to a single appointment
+  resource.
+- **Officer-anchored** (`GET /officers/{id}/appointments`) — each item's `links` contains only
+  `company`. There is no appointment id anywhere on the item.
+
+> **Consequence — the composite key stands, because the passport is officer-anchored.**
+> `UkAppointment` identity remains `officerId + companyNumber + appointedOn`. The company-side
+> `appointment_id` is still worth projecting when a company expansion supplies it, because it
+> gives the evidence drawer an exact single-record deep link. No collisions were observed in the
+> sampled data, but same-date re-appointment remains the theoretical collision case.
+
+## 10. LIVE: confirmations and paging gotchas
+
+- **Passport cost confirmed.** Every appointment's `appointed_to` carried company name, number
+  and status. The passport headline really is one paged call.
+- **Bounded dates are common, not an edge case.** Of 318 sampled appointments, **47 (15%)** had
+  no `appointed_on` and instead carried `appointed_before` with `is_pre_1992_appointment: true`.
+  On one long-lived company, 10 of 52 officers were pre-1992. The three-state date model is
+  mandatory, and imputing the bound would corrupt a sixth of the overlap arithmetic.
+- **Strike-off wording confirmed retrievable.** Dissolved companies carry
+  `gazette-dissolved-voluntary` or `gazette-dissolved-compulsory` filing descriptions (plus
+  `DS01` / `dissolution-application-strike-off-company` on the voluntary path). `company_status`
+  was `dissolved` with `company_status_detail: null` in every case — confirming §5: the
+  distinction exists *only* in filing history.
+- **`category=gazette` filters at source**, returning only gazette items. The manner of
+  dissolution therefore costs exactly one narrow call per dissolved company.
+- **Filing history pages on `total_count`, not `total_results`.** Every other endpoint uses
+  `total_results`; filing history uses `total_count` and omits `total_results` entirely. A
+  producer that reads `total_results` here will silently see "unknown total" and mis-page.
+- **`items_per_page` ceilings differ.** Company officers honoured 500. Officer appointments
+  **cap at 50** regardless of what is requested — so a 200-appointment professional director
+  costs 4 calls, not 1. Fan-out budgeting must use 50 as the page size on the passport path.
+- **Rate-limit headers are returned on every response**: `x-ratelimit-limit: 600`,
+  `x-ratelimit-remain`, `x-ratelimit-reset` (epoch seconds), `x-ratelimit-window: 5m`. The
+  producer can therefore track its own budget precisely rather than inferring it, and shed load
+  before hitting a 429. No 429 was deliberately provoked.
+
+## 11. LIVE: the published filing-history category enum is stale
+
+The vendored swagger declares 11 categories. Live responses returned five more:
+`auditors`, `confirmation-statement`, `dissolution`, `gazette`,
+`persons-with-significant-control`.
+
+> **Consequence — never validate against the spec enum.** `gazette` and `dissolution` are
+> precisely the categories the strike-off feature depends on, and both are absent from the
+> published enum. Treat category as an open vocabulary, project it verbatim, and resolve labels
+> through the vendored enumerations (which *are* current) rather than the swagger.
+
+## Remaining live probes (lower value, deferred to implementation)
 
 Ordered by how much each could still change the design:
 
-1. **`person_number` stability** across a person's separate officer records — could replace
-   attribute matching for level-4 duplicate leads entirely.
-2. **Composite appointment key collisions** — any officer with two appointments at one company
-   sharing `appointed_on` (re-appointment cases).
-3. **`items_per_page` real maximum** and whether `total_results` is exact or capped, per
-   endpoint — determines paging cost and whether "+37 others" counts are trustworthy.
-4. **429 behaviour in practice** — headers returned, whether a `Retry-After` is supplied.
-5. **Field presence rates** over the 20-person probe set: `occupation`, `nationality`,
-   `former_names`, `country_of_residence`, `date_of_birth` on appointments.
-6. **High-degree officers** — the largest `appointment_count` reachable, and what paging a
-   formation-agent director actually costs.
-7. **Officer-scoped deep-link format** confirmation.
-8. **Corporate officer shape** — how `is_corporate_officer` records differ, to size the
-   exclusion rule.
+Answered above: `person_number` (§8), appointment identity (§9), paging ceilings, date states,
+strike-off retrieval, rate-limit headers (§10), category vocabulary (§11).
 
-The 20-person probe set itself must span: common names, apparent duplicates, professional
-directors, large networks, purely historical appointments, corporate officers, pre-1992
-appointments, dissolved-heavy networks, and redacted or partial records.
+Still worth measuring, but none blocks writing YAML:
+
+1. **Composite appointment key collisions** — the sampled data showed none, but a deliberate
+   hunt for same-company re-appointment on the same date would close it. Cheap safeguard: assert
+   uniqueness at MERGE time and log a warning rather than silently overwriting.
+2. **High-degree officers** — the largest `appointment_count` reachable, and what paging a
+   formation-agent director actually costs at 50 per page. Sizes the passport cap.
+3. **Field presence rates** for `occupation`, `nationality`, `former_names` and
+   `country_of_residence`, over a probe set spanning common names, apparent duplicates,
+   professional directors, purely historical appointments, corporate officers and
+   dissolved-heavy networks. Determines which attributes the disambiguation cards can rely on.
+4. **429 behaviour in practice** — whether a `Retry-After` accompanies it. Not provoked
+   deliberately; the `x-ratelimit-*` headers make pre-emptive shedding the better design anyway.
+5. **Corporate officer shape** — how `is_corporate_officer` records differ, to size the
+   exclusion rule for person-shaped observations.
+6. **Officer-scoped public deep-link** confirmation on `find-and-update…`.

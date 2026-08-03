@@ -17,18 +17,20 @@ assumptions.
 
 ## Where things stand
 
-Phase 0's desk-measurable half is **done**: the API specification and enumerations are vendored
-under `apis/companies-house/`, and three design assumptions changed (see PHASE0-FINDINGS.md).
-The live half is **blocked on an API key**.
+**Phase 0 is complete.** The API specification and official enumerations are vendored under
+`apis/companies-house/`, and every design-critical question is answered against the live API.
+Five assumptions changed — read PHASE0-FINDINGS.md before writing any YAML.
 
-To unblock it: register an *API Key application* at
-<https://developer.company-information.service.gov.uk/>, then
+The headline finding: a Companies House `officer_id` is **already a merge** of underlying
+register records that Companies House performed, not the raw atom the product spec assumes. That
+does not break anything, but it does mean the product must disclose it rather than claim an
+unmerged purity it does not have.
+
+Re-run the measurements any time (~45 API calls, one HOLDS/CHANGED verdict per finding):
 
 ```bash
-export CH_API_KEY=...
-python3 scripts/probe-companies-house.py --names "smith,patel,okafor" --out target/probe
+export CH_API_KEY=...   # API Key application from developer.company-information.service.gov.uk
+python3 scripts/probe-companies-house.py
 ```
 
-The probe answers the remaining live questions — chiefly whether `person_number` is a stable
-cross-record person identifier, which would change how duplicate officer records are detected.
-No YAML gets written until it has run.
+Next: Phase 1 — types, producers and `sources.yml`, then the passport and timeline views.

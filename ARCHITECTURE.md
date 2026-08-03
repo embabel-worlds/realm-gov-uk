@@ -1,8 +1,7 @@
 # Director Web — realm architecture
 
-**Status:** proposal. The desk-measurable half of Phase 0 is DONE — see
-[PHASE0-FINDINGS.md](PHASE0-FINDINGS.md), which supersedes this document wherever the two
-disagree. Remaining "TO MEASURE" items need live API responses and are blocked on an API key.
+**Status:** proposal. **Phase 0 is COMPLETE** — see [PHASE0-FINDINGS.md](PHASE0-FINDINGS.md),
+which is measured against the live API and supersedes this document wherever the two disagree.
 **Product spec:** [DIRECTOR-WEB.md](DIRECTOR-WEB.md) — the product contract this realm implements.
 **Sibling precedent:** `realm-gov-au` — its `sources.yml` shape declarations, measured-producer
 comments and views-first reporting are the house style this document follows.
@@ -40,9 +39,9 @@ edge stays evidence-linked.
 
 | Label | Identity key | MERGE semantics |
 |---|---|---|
-| `UkOfficerRecord` | `officerId` (Companies House officer identifier) | `identity: true` — one node per register identifier, never per person |
+| `UkOfficerRecord` | `officerId` (Companies House officer identifier) | `identity: true` — one node per register identifier. **MEASURED**: this identifier is itself an upstream Companies House grouping of underlying register records (1.3% span more than one `person_number`), so it is a supplied judgment, not a raw atom — disclose, do not hide |
 | `UkCompany` | `companyNumber` | `identity: true` |
-| `UkAppointment` | `appointmentId` — composite `officerId + companyNumber + appointedOn`. **MEASURED**: the appointments endpoint supplies no native appointment id, so the composite is required. Live check still needed for same-date re-appointment collisions | `identity: true` |
+| `UkAppointment` | `appointmentId` — composite `officerId + companyNumber + appointedOn`. **MEASURED**: an appointment id exists on the *company*-anchored path (`links.self`) but not on the officer-anchored path the passport uses, so the composite is required; project the company-side id as a bonus deep link when an expansion supplies it | `identity: true` |
 | `UkPscRecord` | `pscId` (per-company PSC link id; TO MEASURE stability) | `identity: true` |
 | `UkAddress` | `normalizedAddress` (deterministic normalization; original rendering kept as a property) | `identity: true` — a navigation node, not a claim of shared occupation |
 | `UkCompanyEvent` | `eventId` (composite `companyNumber + type + date`) | `identity: true` |
@@ -77,11 +76,17 @@ The product spec's five levels map onto three distinct mechanisms:
 | 4. Possible same person | compatible attributes, different identifiers | a **view** (`PossibleDuplicateOfficers`) returning candidate pairs with the matching attributes listed; no edge, no merged count |
 | 5. Same name only | search lead | search producer output, displayed and discarded; never persisted as a relationship |
 
-**`person_number` may upgrade level 4.** The company-officers endpoint exposes a `person_number`
-documented as a unique person identifier shared with the paid bulk products. If it proves stable
-across a person's separate officer records, duplicate detection becomes identifier-based rather
-than attribute-based — a materially stronger and more honest basis for the level-4 view. If it is
-per-appointment, it is useless for this. It is the highest-value item on the live-probe list.
+**`person_number` does NOT upgrade level 4 — measured and settled.** Its 8-digit prefix is 1:1
+with `officerId` across 713 sampled officer records, so it carries no information `officerId`
+does not. Duplicate detection stays attribute-based, exactly as originally specified. Project
+`person_number` only as the join key to the paid bulk products.
+
+**Level 2 needs a disclosure, not just a key.** Because `officerId` is Companies House's own
+grouping of underlying register records, "exact officer record" means "the grouping Companies
+House publishes", not "one raw filing". The passport and methodology must say so, and where a
+record demonstrably spans several underlying entries that composition belongs in its evidence
+drawer. Claiming an unmerged purity the data does not have would be the one dishonesty this
+product cannot afford.
 
 **Corporate officers are a sixth case.** `officer_role` spans 23 values and the appointments list
 carries `is_corporate_officer`. A corporate director is not a natural person, so it must be
@@ -138,7 +143,7 @@ Access paths, one producer each:
 | `companyProfile` | `GET /company/{companyNumber}` | per-key | `UkCompany` (status verbatim), `UkCompanyEvent` (incorporation, status) |
 | `companyOfficers` | `GET /company/{companyNumber}/officers` | per-key, paged | co-director `UkOfficerRecord` + `UkAppointment` |
 | `companyPscs` | `GET /company/{companyNumber}/persons-with-significant-control` | per-key, paged | `UkPscRecord` |
-| `filingHistory` | `GET /company/{companyNumber}/filing-history` | per-key, paged, **category-filtered at source** (TO MEASURE which categories) | selected `UkCompanyEvent`s |
+| `filingHistory` | `GET /company/{companyNumber}/filing-history` | per-key, paged on `total_count`, **category-filtered at source** | selected `UkCompanyEvent`s, incl. manner of dissolution via `category=gazette` |
 
 Phase 0 must additionally measure, per gov-au practice, before any `project:` block is written:
 field presence rates (month/year of birth, occupation, former names, address granularity),
@@ -162,6 +167,16 @@ The 600/5min budget is the realm's scarcest resource and shapes everything:
   and specifically **never 429**, which must instead surface as a partial-result warning
   ("register busy, N of M companies loaded") so a rate-limited page renders as partial, not
   complete. This is the product spec's partial-rendering requirement landing in the realm layer.
+- **MEASURED: every response carries `x-ratelimit-limit`, `x-ratelimit-remain`,
+  `x-ratelimit-reset` (epoch seconds) and `x-ratelimit-window`.** The producer should track the
+  remaining budget from these headers and shed load *before* a 429 rather than discovering the
+  limit by hitting it — which also keeps us clear of the documented ban policy.
+- **MEASURED: the officer-appointments endpoint caps at 50 items per page** regardless of the
+  requested `items_per_page` (company officers honoured 500). Passport paging must assume 50, so
+  a 200-appointment professional director costs 4 calls.
+- **MEASURED: filing history reports `total_count`, not `total_results`.** A producer reading
+  `total_results` on that endpoint sees nothing and mis-pages. Every other endpoint uses
+  `total_results`.
 - The per-key API credential lives in the credential store, referenced from `apis/`; never in
   this repo.
 
@@ -180,6 +195,17 @@ companies, and only inside the `StatusConcentration` drill-down where a user is 
 question. Human wording for every code comes from the vendored enumeration mappings, including
 `cessation_label_for_status` for cessation dates, so the app never invents phrasing.
 
+**MEASURED and confirmed live**: dissolved companies return `company_status: dissolved` with
+`company_status_detail: null`, while their filing history carries `gazette-dissolved-voluntary`
+or `gazette-dissolved-compulsory` (plus `DS01` on the voluntary path). `category=gazette` filters
+at source, so the manner of dissolution costs exactly one narrow call per dissolved company.
+
+**Do not validate `category` against the vendored swagger enum** — it is stale. Live responses
+return `gazette`, `dissolution`, `auditors`, `confirmation-statement` and
+`persons-with-significant-control`, none of which the published enum lists, and the first two are
+exactly what this feature depends on. Treat category as an open vocabulary and resolve labels
+through the vendored enumerations, which are current.
+
 This needs a matching edit to the product spec's release gate, which currently reads as though
 the status field itself distinguishes strike-off. See PHASE0-FINDINGS.md §5.
 
@@ -190,6 +216,10 @@ date). Every temporal calculation therefore resolves to exact, bounded, or unkno
 `RecurringCoDirectors` must return `overlap: unknown` for bounded dates rather than treating the
 bound as a start. Imputing a bound as a date would manufacture overlaps the register does not
 support, which is precisely the inference the product forbids.
+
+**MEASURED: this is 15% of appointments, not an edge case** (47 of 318 sampled; 10 of 52
+officers on one long-lived company). Getting it wrong would corrupt a sixth of the overlap
+arithmetic on exactly the historical networks the product exists to explain.
 
 ### `sources.yml` sketch
 
@@ -285,7 +315,7 @@ Engineering exit gates alongside the product spec's:
 
 | Product phase | Realm deliverable | Engineering exit gate |
 |---|---|---|
-| 0 — evidence spike | probe scripts under `scripts/`; measured comments drafted for every producer; deep-link pattern table | every TO MEASURE in this doc resolved and written down; 20-person probe set renders one exact officer's appointments with zero cross-person merging |
+| 0 — evidence spike ✅ | `scripts/probe-companies-house.py`; vendored specs + enumerations; PHASE0-FINDINGS.md | **DONE** — every design-critical question answered against the live API, each probe printing a HOLDS/CHANGED verdict that re-runs on demand |
 | 1 — passport | `types/uk-corporate.yml`, producers, `sources.yml`, passport + timeline + first three observation views, app skeleton | passport views return correct counts against recorded fixtures; 429 renders as partial |
 | 2 — the web | expansion views with caps, `PossibleDuplicateOfficers`, methodology page fed from view params | every graph edge dated or explicitly undated; capped expansions report their cap; duplicate leads excluded from every count (asserted by test) |
 | 3 — public-interest layer | contract/donation producers joining on `companyNumber` only; possible-match sections as separate views | exact joins and name-leads structurally separate views — inconfusable by construction |
@@ -309,26 +339,27 @@ Engineering exit gates alongside the product spec's:
 
 Carried from the product spec plus this document's own:
 
-**Resolved by the Phase 0 desk spike:**
+**Resolved by Phase 0:**
 
-- ~~Does the appointments endpoint supply a native appointment id?~~ **No** — the composite key
-  is required.
-- ~~Do bulk snapshots offer a mirror path?~~ **No** — no free officer data, live companies only.
-- ~~Is filing history filterable by category at source?~~ **Yes** — an 11-value inclusive,
-  comma-separated `category` parameter.
+- ~~Native appointment id?~~ **Company-anchored yes, officer-anchored no** — composite key stands.
+- ~~Bulk snapshots as a mirror?~~ **No** — no free officer data, live companies only.
+- ~~Filing history filterable by category at source?~~ **Yes**, and the published enum is stale.
+- ~~Does `person_number` upgrade duplicate detection?~~ **No** — its prefix is 1:1 with
+  `officerId`. But it revealed that `officerId` is itself an upstream merge.
 
 **Still open:**
 
 1. Public URL key: raw `officerId` or an opaque internal key? (Leaning raw — it *is* the public
-   register identifier and the honesty story; revisit only if live probing shows identifier churn.)
-2. Is `person_number` stable across a person's separate officer records? (Could replace
-   attribute-based duplicate detection entirely — highest-value live probe.)
-3. Can the composite appointment key collide, via same-date re-appointment at one company?
-4. Can historical registered-office addresses be fetched consistently enough to make address
-   overlap temporal? (Now a question about the `address` filing-history category specifically.)
-5. At what officer-degree does the passport itself need a cap (professional directors with
-   hundreds of appointments), and what does the capped passport promise?
-6. Where does address normalization run — producer projection (deterministic, cache-friendly) or
+   register identifier and the honesty story; no identifier churn observed.)
+2. **Does the product disclose that an officer record is Companies House's own grouping?**
+   Recommended yes, in the methodology and the evidence drawer — see PHASE0-FINDINGS.md §8.
+   This is a product decision with a spec edit attached.
+3. Does the product keep the voluntary-strike-off promise at one extra call per dissolved
+   company, or reword the release gate? (Product decision — PHASE0-FINDINGS.md §5.)
+4. Can the composite appointment key collide via same-date re-appointment? (None observed;
+   assert uniqueness at MERGE and warn rather than overwrite.)
+5. Can historical registered-office addresses be fetched consistently enough to make address
+   overlap temporal? (A question about the `address` filing-history category specifically.)
+6. At what officer-degree does the passport need a cap, given 50-per-page paging?
+7. Where does address normalization run — producer projection (deterministic, cache-friendly) or
    view-time? (Leaning producer, so `UkAddress` identity is stable.)
-7. Does the product keep the voluntary-strike-off promise at one extra call per dissolved
-   company, or reword the release gate? (Product decision — see PHASE0-FINDINGS.md §5.)
