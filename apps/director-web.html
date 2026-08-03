@@ -571,7 +571,7 @@
     $('appointments').innerHTML = '';
     try {
       var env = await runners.appointments.view('OfficerAppointments',
-        { officerId: officerId, status: 'all' },
+        { officerId: officerId },
         { expectation: 'Listing every appointment on this record.' });
       if (!env) return;
       var rows = rowsOf(env);
@@ -632,7 +632,7 @@
     $('timeline').innerHTML = '';
     try {
       var env = await runners.timeline.view('OfficerTimeline',
-        { officerId: officerId, eventType: 'all' },
+        { officerId: officerId },
         { expectation: 'Ordering appointments and resignations into one sequence.' });
       if (!env) return;
       var rows = rowsOf(env);

@@ -92,13 +92,15 @@
     officerId:
       type: string
       description: "The Companies House officer identifier."
-    status:
-      type: string
-      default: "all"
-      description: "Filter by company status, verbatim (e.g. 'dissolved', 'active'). 'all' applies no filter."
+  # NO STATUS FILTER PARAMETER, deliberately. This view once carried
+  # `WHERE $status = 'all' OR a.companyStatus = $status`, and the planner pushed the
+  # `companyStatus` comparison down to the producer as a deterministic FETCH filter — so with the
+  # default 'all' it tested every fetched record for `companyStatus = 'all'`, matched none, and
+  # logged "deterministic prefilter kept 0 of 4 record(s)". The view returned nothing while the
+  # API call plainly succeeded. A predicate on a fetched label is a FETCH filter, not a display
+  # filter; narrowing by status belongs to the caller, over the rows this returns.
   cypher: |
     MATCH (o:UkOfficerRecord {officerId: $officerId})-[:HELD_APPOINTMENT]->(a:UkAppointment)
-    WHERE $status = 'all' OR a.companyStatus = $status
     RETURN a.companyName        AS companyName,
            a.companyNumber      AS companyNumber,
            a.companyStatus      AS companyStatus,
@@ -146,10 +148,10 @@
     officerId:
       type: string
       description: "The Companies House officer identifier."
-    eventType:
-      type: string
-      default: "all"
-      description: "'appointed', 'resigned', or 'all'."
+  # Like OfficerAppointments, this returns the whole sequence and leaves narrowing to the caller.
+  # Its filter ran on a computed map rather than the fetched label, so it was not the pushdown
+  # hazard — but a view whose parameter can only ever be 'all' in practice is a filter waiting to
+  # be pushed somewhere it does not belong.
   cypher: |
     MATCH (o:UkOfficerRecord {officerId: $officerId})-[:HELD_APPOINTMENT]->(a:UkAppointment)
     WITH a, coalesce(a.appointedOn, a.appointedBefore) AS startDate
@@ -169,7 +171,6 @@
          } END) AS resignedEvents
     WITH [e IN appointedEvents + resignedEvents WHERE e IS NOT NULL AND e.eventDate IS NOT NULL] AS events
     UNWIND events AS e
-    WITH e WHERE $eventType = 'all' OR e.eventType = $eventType
     RETURN e.eventDate     AS eventDate,
            e.eventType     AS eventType,
            e.dateBasis     AS dateBasis,

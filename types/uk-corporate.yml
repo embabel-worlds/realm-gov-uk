@@ -42,15 +42,31 @@
     counts, date range, companies by status — is ONE call. A recorded appointment establishes a
     ROLE FOR A PERIOD and nothing more: not share ownership, not operational involvement
     throughout, not responsibility for any company decision.
-  # DELIBERATELY NO IDENTITY PROPERTY. The officer-anchored endpoint publishes no appointment id
-  # (measured — see PHASE0-FINDINGS.md §9), and a producer `project:` is a straight JSONPath
-  # extraction with no concatenation, so the composite officer+company+appointedOn key CANNOT be
-  # minted here. Declaring a partial key would be far worse than none: `companyNumber` as identity
-  # would MERGE every officer's appointment at a given company into one node — the same class of
-  # silent collapse that once merged 10,473 gov-au awards down to 261. These rows are live and
-  # query-time; they are never persisted, so they need no MERGE key. If persistence is ever wanted,
-  # reach it through UkCompanyOfficer, whose company-anchored records DO carry a real id.
+  # IDENTITY IS MANDATORY — this type once had none, and every view over it returned ZERO rows.
+  # The materializer does `rec[identityProperty] ?: continue`, so a fetched record with no identity
+  # value is silently skipped: the API call succeeds, the producer reports its records, and the
+  # join quietly materialises nothing. There is no fallback and no warning.
+  #
+  # But this endpoint publishes NO unique field at all — measured 2026-08-03, an appointment item
+  # carries no id, no etag, and only `links.company`. A `project:` is a straight JSONPath
+  # extraction with no concatenation, so the honest officer+company+appointedOn key cannot be
+  # minted. So `companyRef` is a SYNTHETIC key, the same compromise gov-au makes for the lobbyist
+  # register, and it carries a real, bounded cost:
+  #
+  #   · Two roles at the SAME company (director and secretary, or a re-appointment) collapse into
+  #     ONE node, because they share a company link. That is a genuine loss and it is not rare.
+  #   · Across officers the key is not unique either, so a query binding SEVERAL officer anchors
+  #     would merge their appointments at a shared company. Phase 1 binds exactly one officer per
+  #     query, which is why this is survivable now; Phase 2's co-director work must not assume it.
+  #
+  # Aggregate via the EDGE from a bound anchor, never by counting these nodes across officers.
   properties:
+    companyRef:
+      metadata: { identity: "true" }
+      description: >-
+        The register's own path to the company this appointment is at, '/company/{number}' — the
+        only per-record value the officer-anchored endpoint publishes. A SYNTHETIC identity, not a
+        Companies House appointment id: see the note above for what it collapses.
     officerId: "The Companies House officer identifier this appointment belongs to. Echoed from the fetch key."
     companyNumber: "Companies House number of the company appointed to. The exact join key to any company record."
     companyName: "The company's name as the register holds it now, not necessarily at appointment time."

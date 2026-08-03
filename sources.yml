@@ -20,10 +20,12 @@ sources:
   - name: ch-officer-appointments
     producer: officerAppointments
     label: UkAppointment
-    # No identityProperty: the officer-anchored endpoint publishes no appointment id, and a
-    # projection cannot mint a composite. Declaring a PARTIAL key here would be actively
-    # dangerous — companyNumber as identity would merge every officer's appointment at a company
-    # into one node. These rows are live and query-time; they are never ingested.
+    # A SYNTHETIC identity, because the officer-anchored endpoint publishes no id, no etag and no
+    # per-appointment link. It is required, not optional: a fetched record with no identity value
+    # is skipped by the materializer, so omitting it made every view return zero rows while the
+    # API call succeeded. The cost — two roles at one company collapsing into one node — is
+    # documented on the type.
+    identityProperty: companyRef
     anchor:
       label: UkOfficerRecord
       keyProperty: officerId

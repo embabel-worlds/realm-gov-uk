@@ -43,6 +43,10 @@
   args:
     items_per_page: 50
   project:
+    # The type's identity. This endpoint publishes no id, no etag and no per-appointment link —
+    # `links.company` is the only per-record value there is. Without an identity value on every
+    # record the materializer skips them all and every view returns zero rows, silently.
+    companyRef: "links.company"
     companyNumber: "appointed_to.company_number"
     companyName: "appointed_to.company_name"
     companyStatus: "appointed_to.company_status"
