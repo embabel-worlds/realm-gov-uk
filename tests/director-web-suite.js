@@ -63,6 +63,13 @@ const FIXTURES = {
       overlapPerCompany: ['did not overlap'], rolePerCompany: ['director'],
       officialUrl: 'https://find-and-update.company-information.service.gov.uk/officers/OFFICER_Y/appointments' }
   ],
+  BusinessActivities: [
+    { sicCode: '68209', activity: 'Other letting & operating of own or leased real estate',
+      companyCount: 3, companies: ['Alpha Holdings Ltd', 'Delta Estates Ltd'],
+      companyNumbers: ['01234567', '04567890'] },
+    { sicCode: '70229', activity: 'Management consultancy activities other than financial management',
+      companyCount: 1, companies: ['Beta Trading Ltd'], companyNumbers: ['02345678'] }
+  ],
   OfficerPassport: [
     { appointmentsRead: 50, currentAppointments: 7, formerAppointments: 43, distinctCompanies: 26,
       earliestAppointedOn: '2012-03-14', latestAppointedOn: '2026-01-09', boundedStartDates: 4,
@@ -193,10 +200,19 @@ async function searchAndSelect(page, which) {
   await page.fill('#q', 'avery');
   await page.click('#search-form button[type=submit]');
   await page.waitForSelector('.dw-candidate');
-  check('full-name person matches shown, never merged', (await page.locator('#candidates .dw-candidate').count()) === 2);
-  const firstCard = await page.locator('.dw-candidate').first().innerText();
+  check('records that may be one person collapse into ONE card',
+    (await page.locator('#candidates .dw-group').count()) === 1);
+  check('the group still lists each record separately, never merged',
+    (await page.locator('#candidates .dw-group .dw-subrecord').count()) === 2);
+  check('no repeated near-identical top-level cards',
+    (await page.locator('#candidates > .dw-candidates > .dw-candidate').count()) === 0);
+  const firstCard = await page.locator('#candidates .dw-subrecord').first().innerText();
   check('candidate shows appointment count', /26 appointments/.test(firstCard));
-  check('candidate shows birth month and year', /Born 04\/1968/.test(firstCard));
+  // The birth date is stated ONCE on the group, not repeated on every record — repeating it is
+  // exactly the near-identical noise the grouping exists to remove.
+  check('the shared birth date is stated once, on the group',
+    /Born|04\/1968/.test(await page.locator('#candidates .dw-group').innerText()) &&
+    !/Born 04\/1968/.test(firstCard));
   check('a partial-name match is set aside, not mixed in',
     /matching only part of that name/.test(await page.locator('#btn-partial').innerText()));
   check('corporate officers are set aside, not offered as people',
@@ -207,18 +223,16 @@ async function searchAndSelect(page, which) {
     /A company, not a person/.test(await page.locator('#corporate').innerText()));
 
   console.log('\n== possible same person ==');
-  await page.waitForSelector('#duplicates .dw-obs');
-  const dup = await page.locator('#duplicates').innerText();
-  check('records sharing a birth date are grouped', /2 records here may be the same person/.test(dup));
+  const dup = await page.locator('#candidates .dw-group').innerText();
+  check('the group is labelled as possibly one person', /2 records, possibly one person/.test(dup));
   check('the shared evidence is stated', /04\/1968/.test(dup) && /avery/.test(dup));
-  check('it refuses to assert they are one person', /That they ARE one person/.test(dup));
-  check('it promises never to add their counts', /never adds their appointment counts/.test(dup));
-  check('both official records are linked',
-    (await page.locator('#duplicates a[href*="/officers/OFFICER_A/"]').count()) === 1 &&
-    (await page.locator('#duplicates a[href*="/officers/OFFICER_B/"]').count()) === 1);
+  check('it says the register has not linked them', /has not linked them/.test(dup));
+  check('it promises never to add their counts', /never adds\s+their appointment counts/.test(dup.replace(/\s+/g,' ')));
+  check('each record keeps its own appointment count',
+    /26 appointments/.test(dup) && /2 appointments/.test(dup));
 
   console.log('\n== passport ==');
-  await page.locator('.dw-candidate').first().click();
+  await page.locator('#candidates .dw-subrecord').first().click();
   await page.waitForSelector('#passport-tiles .dw-tile');
   const tiles = await page.locator('#passport-tiles').innerText();
   check('companies count shown', /26/.test(tiles));
@@ -266,6 +280,16 @@ async function searchAndSelect(page, which) {
   check('sharing a company at a different time is marked', /not at the same time/.test(co));
   check('an undeterminable overlap says so', /dates unclear/.test(co));
   check('co-appointment is explained as ordinary', /ordinary: partners, family firms/.test(co));
+
+  calls = await page.evaluate(() => window.__dwCalls.map(c => c.id));
+  check('BusinessActivities NOT called on render', calls.filter(c => c === 'BusinessActivities').length === 0);
+  await page.click('#btn-activities');
+  await page.waitForSelector('#activities table');
+  const act = await page.locator('#activities').innerText();
+  check('activities read in words, not bare codes', /letting & operating of own or leased real estate/.test(act));
+  check('the SIC code is still shown as the source value', /68209/.test(act));
+  check('self-declaration is stated, not glossed over', /SELF-DECLARED/.test(act));
+  check('it warns the counts overlap', /add up to more than the number of companies/.test(act));
 
   console.log('\n== detail tabs ==');
   const appts = await page.locator('#appointments').innerText();

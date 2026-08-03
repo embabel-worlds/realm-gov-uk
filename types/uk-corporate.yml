@@ -289,3 +289,25 @@
       recordKeyField: query
       producer: officerSearch
       description: Candidate officer records for a name, keyed by the search phrase.
+
+# ---------------------------------------------------------------------------------------------
+# Seeded reference. Not fetched from anywhere: a small static catalogue, loaded from
+# reference/sic-codes.yml, that turns the bare activity code on a company profile into the
+# official wording. `userAnchor: false` because it is the same for everyone.
+# ---------------------------------------------------------------------------------------------
+
+- name: SicCode
+  userAnchor: false
+  description: |
+    A UK SIC 2007 activity code and its official description — what a company told the register
+    it does. Join it to a company profile's sicCodes to read an activity rather than a number:
+      MATCH (c:UkCompany {companyNumber: '01234567'})-[:HAS_PROFILE]->(p:UkCompanyProfile)
+      MATCH (s:SicCode) WHERE s.code IN p.sicCodes
+      RETURN s.code, s.description
+    A SIC code is SELF-DECLARED and often left at a generic default, so it describes what a
+    company said it would do, not necessarily what it did.
+  properties:
+    code:
+      identity: true
+      description: "The four- or five-digit SIC 2007 code as the register publishes it. Identity key."
+    description: "The official description of that activity."

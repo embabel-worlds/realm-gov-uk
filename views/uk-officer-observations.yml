@@ -210,3 +210,34 @@
            'https://find-and-update.company-information.service.gov.uk/company/'
              + companyNumber + '/filing-history' AS filingHistoryUrl
     ORDER BY latestFilingDate DESC, companyName
+
+- name: BusinessActivities
+  description: >-
+    What this person's companies say they DO, in the register's own words — every activity code
+    across their companies, how many companies declare it, and which. This is the quickest way to
+    see whether a large network is one line of business or many unrelated ones.
+
+    A SIC code is SELF-DECLARED by the company and is frequently left at a broad default, so it
+    records what a company told the register it would do — not what it actually did, and not what
+    it earned. A company may declare several activities, so the counts here sum to more than the
+    number of companies. Costs one register call per company.
+  params:
+    officerId:
+      type: string
+      description: "The Companies House officer identifier."
+  cypher: |
+    MATCH (o:UkOfficerRecord {officerId: $officerId})-[:HELD_APPOINTMENT]->(a:UkAppointment)
+    WITH DISTINCT a.companyNumber AS companyNumber
+    MATCH (c:UkCompany {companyNumber: companyNumber})-[:HAS_PROFILE]->(p:UkCompanyProfile)
+    WHERE p.sicCodes IS NOT NULL
+    UNWIND p.sicCodes AS sicCode
+    WITH sicCode, collect(DISTINCT p.companyName) AS companies,
+         collect(DISTINCT companyNumber) AS companyNumbers
+    // The catalogue is seeded reference data, so a code with no entry still reports its number
+    // rather than vanishing from the summary.
+    OPTIONAL MATCH (s:SicCode {code: sicCode})
+    RETURN sicCode,
+           coalesce(s.description, '(no description published for this code)') AS activity,
+           size(companies) AS companyCount,
+           companies, companyNumbers
+    ORDER BY companyCount DESC, activity

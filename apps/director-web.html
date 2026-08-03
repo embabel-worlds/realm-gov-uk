@@ -8,7 +8,7 @@
 <link rel="stylesheet" href="/api/v1/apps-runtime/v1/theme.css">
 <script src="/api/v1/apps-runtime/v1/embabel.js"></script>
 <script type="application/embabel-app+json">
-{"version":1,"name":"director-web","requires":{"lenses":[],"views":["OfficerSearchCandidates","OfficerPassport","OfficerAppointments","OfficerCompaniesByStatus","OfficerTimeline","PossibleSamePersonRecords","CoDirectors","ManyAppointments","SynchronousRoleChanges","FormationBurst","OfficerDissolutionManner"],"realms":["gov-uk"],"namespaces":[]}}
+{"version":1,"name":"director-web","requires":{"lenses":[],"views":["OfficerSearchCandidates","OfficerPassport","OfficerAppointments","OfficerCompaniesByStatus","OfficerTimeline","PossibleSamePersonRecords","CoDirectors","BusinessActivities","ManyAppointments","SynchronousRoleChanges","FormationBurst","OfficerDissolutionManner"],"realms":["gov-uk"],"namespaces":[]}}
 </script>
 <style>
   /* Rides the v1 theme tokens and recolours only the accent pair, so shared components stay
@@ -92,6 +92,12 @@
   .dw-candidate .dw-cname { font-weight: 600; }
   .dw-candidate .dw-cmeta { font-size: 0.82rem; color: var(--dw-ink-soft); line-height: 1.45; }
 
+  .dw-group { border: 1px solid var(--embabel-border); border-left: 3px solid var(--embabel-accent);
+    border-radius: var(--embabel-radius-sm); padding: 13px 15px; margin-bottom: 12px; }
+  .dw-group-head { display: flex; align-items: center; gap: 9px; flex-wrap: wrap; margin-bottom: 6px; }
+  .dw-group .dw-sub { margin-bottom: 10px; }
+  .dw-subrecord { background: var(--embabel-surface); }
+
   .dw-tiles { display: grid; gap: 10px; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); margin-bottom: 14px; }
   .dw-tile { background: var(--embabel-bg); border: 1px solid var(--dw-rule); border-radius: var(--embabel-radius-sm); padding: 11px 13px; }
   .dw-tile .dw-n { font-size: 1.5rem; font-variant-numeric: tabular-nums; line-height: 1.15; }
@@ -151,8 +157,6 @@
       <button type="submit" class="embabel-button">Search</button>
     </form>
     <embabel-operation-state id="search-state"></embabel-operation-state>
-    <embabel-operation-state id="duplicates-state"></embabel-operation-state>
-    <div id="duplicates"></div>
     <div id="candidates" class="dw-candidates"></div>
     <div id="partial-wrap" class="dw-hidden">
       <p class="dw-note">
@@ -187,6 +191,7 @@
       <button type="button" class="embabel-button embabel-button--quiet" id="btn-formation">Check for formation clusters</button>
       <button type="button" class="embabel-button embabel-button--quiet" id="btn-dissolution">Check how dissolved companies were closed</button>
       <button type="button" class="embabel-button embabel-button--quiet" id="btn-codirectors">Find who they sit on boards with</button>
+      <button type="button" class="embabel-button embabel-button--quiet" id="btn-activities">Summarise what these companies do</button>
     </div>
     <p class="dw-note">Both checks read one company at a time from the register, so they take longer
       than the summary above.</p>
@@ -194,6 +199,8 @@
     <div id="deep-results"></div>
     <embabel-operation-state id="codirectors-state"></embabel-operation-state>
     <div id="codirectors"></div>
+    <embabel-operation-state id="activities-state"></embabel-operation-state>
+    <div id="activities"></div>
   </section>
 
   <section class="dw-card dw-hidden" id="detail-card">
@@ -293,8 +300,8 @@
     passport: runnerFor('passport-state'),
     observations: runnerFor('observations-state'),
     deep: runnerFor('deep-state'),
-    duplicates: runnerFor('duplicates-state'),
     codirectors: runnerFor('codirectors-state'),
+    activities: runnerFor('activities-state'),
     appointments: runnerFor('appointments-state'),
     statuses: runnerFor('statuses-state'),
     timeline: runnerFor('timeline-state')
@@ -312,7 +319,6 @@
 
   async function search(q) {
     $('candidates').innerHTML = '';
-    $('duplicates').innerHTML = '';
     show($('passport-card'), false);
     show($('observations-card'), false);
     show($('detail-card'), false);
@@ -322,8 +328,15 @@
         expectation: 'Asking Companies House for officers matching that name.'
       });
       if (!env) return;                       // superseded by a newer search
-      renderCandidates(rowsOf(env), q, env);
-      loadPossibleDuplicates(q);
+      // The grouping decides how the list is DRAWN, so both must land before rendering —
+      // otherwise the same person flashes up as four separate cards and then regroups.
+      var groupEnv = null;
+      try {
+        groupEnv = await embabel.views.invoke('PossibleSamePersonRecords', { query: q });
+      } catch (groupErr) {
+        groupEnv = null;                      // grouping is an aid; the list still stands without it
+      }
+      renderCandidates(rowsOf(env), rowsOf(groupEnv), q, env);
     } catch (err) {
       $('candidates').innerHTML = '<p class="dw-empty">The register did not answer that search: ' +
         escapeHtml(err && err.message || String(err)) + '</p>';
@@ -351,7 +364,34 @@
     });
   }
 
-  function renderCandidates(rows, q, env) {
+  /** One card standing for several records that may be the same person. Nothing is merged:
+      each record keeps its own appointment count and its own link, and the reader chooses. */
+  function groupCard(g) {
+    var records = g.names.map(function (n, i) {
+      return '<button type="button" class="dw-candidate dw-subrecord" data-officer="' +
+        escapeHtml(g.officerIds[i]) + '" data-name="' + escapeHtml(n) + '">' +
+        '<span class="dw-cname">' + escapeHtml(n) + '</span>' +
+        '<span class="dw-cmeta">' + num(g.appointmentsPerRecord[i]) + ' appointment' +
+        (g.appointmentsPerRecord[i] === 1 ? '' : 's') +
+        (g.addressSnippets[i] ? ' &middot; ' + escapeHtml(g.addressSnippets[i]) : '') + '</span>' +
+        '</button>';
+    }).join('');
+    return '<div class="dw-group">' +
+      '<div class="dw-group-head">' +
+        '<strong>' + escapeHtml(g.names[0]) + '</strong> ' +
+        '<span class="dw-pill">' + num(g.recordCount) + ' records, possibly one person</span>' +
+      '</div>' +
+      '<p class="dw-sub">All born ' + escapeHtml(String(g.birthMonth).padStart(2, '0')) + '/' +
+      escapeHtml(g.birthYear) + ' and sharing the name word' +
+      (g.sharedNameWords.length === 1 ? '' : 's') + ' ' +
+      g.sharedNameWords.map(function (w) { return '<span class="dw-pill">' + escapeHtml(w) + '</span>'; }).join(' ') +
+      ', but Companies House holds them separately and has not linked them. Each record below is ' +
+      'its own — pick one to see its companies. This app will not merge them, and never adds ' +
+      'their appointment counts together.</p>' +
+      '<div class="dw-candidates">' + records + '</div></div>';
+  }
+
+  function renderCandidates(rows, groups, q, env) {
     show($('partial-wrap'), false);
     show($('corporate-wrap'), false);
     show($('partial'), false);
@@ -376,8 +416,23 @@
     var primary = full.length ? full : people;
     if (!full.length) partial = [];
 
+    // Records that may be one person collapse into ONE card rather than repeating a near-identical
+    // row four times. Grouping is presentation only — no count is combined and no identity claimed.
+    var grouped = {};
+    (groups || []).forEach(function (g) {
+      g.officerIds.forEach(function (id) { grouped[id] = true; });
+    });
+    var visibleGroups = (groups || []).filter(function (g) {
+      return g.officerIds.some(function (id) {
+        return primary.some(function (r) { return r.officerId === id; });
+      });
+    });
+    var loose = primary.filter(function (r) { return !grouped[r.officerId]; });
+
     $('candidates').innerHTML = warningHtml(env) +
-      (primary.length ? primary.map(candidateCard).join('')
+      visibleGroups.map(groupCard).join('') +
+      (loose.length ? '<div class="dw-candidates">' + loose.map(candidateCard).join('') + '</div>' : '') +
+      ((visibleGroups.length || loose.length) ? ''
         : '<p class="dw-empty">No person matched that name — only companies did. They are listed below.</p>');
     wireCandidateClicks($('candidates'));
 
@@ -406,45 +461,6 @@
     show($('corporate'), on);
   });
 
-  // Records that MIGHT be one person. Shown with the evidence, never merged, never summed.
-  async function loadPossibleDuplicates(q) {
-    $('duplicates').innerHTML = '';
-    try {
-      var env = await runners.duplicates.view('PossibleSamePersonRecords', { query: q });
-      if (!env) return;
-      var groups = rowsOf(env);
-      if (!groups.length) return;
-      $('duplicates').innerHTML = groups.map(function (g) {
-        var rows = g.names.map(function (n, i) {
-          return '<tr><td>' + escapeHtml(n) + '</td>' +
-            '<td>' + num(g.appointmentsPerRecord[i]) + '</td>' +
-            '<td>' + escapeHtml(g.addressSnippets[i] || '') + '</td>' +
-            '<td>' + link('https://find-and-update.company-information.service.gov.uk/officers/'
-              + g.officerIds[i] + '/appointments', 'Official record') + '</td></tr>';
-        }).join('');
-        return '<div class="dw-obs"><h4>' + num(g.recordCount) +
-          ' records here may be the same person</h4><dl>' +
-          '<dt>What the register says</dt><dd>They share a recorded birth date of ' +
-          escapeHtml(String(g.birthMonth).padStart(2, '0')) + '/' + escapeHtml(g.birthYear) +
-          ' and the name word' + (g.sharedNameWords.length === 1 ? '' : 's') + ' ' +
-          g.sharedNameWords.map(function (w) { return '<span class="dw-pill">' + escapeHtml(w) + '</span>'; }).join(' ') +
-          ', but Companies House holds them under separate officer identifiers and has not linked them.</dd>' +
-          '<dt>Why someone might ask</dt><dd>Choosing one record shows only that record’s companies. ' +
-          'If these are one person, each is part of a larger picture.</dd>' +
-          '<dt>What this does not establish</dt><dd class="dw-notmean">That they ARE one person. ' +
-          'Thousands of people share a birth month and year, and name spellings vary between ' +
-          'filings. Compare the official records and judge for yourself — this app will not merge ' +
-          'them, and never adds their appointment counts together.</dd>' +
-          '<dt>The records</dt><dd><div class="dw-scroll"><table class="dw-table"><thead><tr>' +
-          '<th>Name as recorded</th><th>Appointments</th><th>Address</th><th>Source</th></tr></thead>' +
-          '<tbody>' + rows + '</tbody></table></div></dd></dl></div>';
-      }).join('');
-    } catch (err) {
-      $('duplicates').innerHTML = '<p class="dw-empty">The register did not answer the ' +
-        'duplicate-record check: ' + escapeHtml(err && err.message || String(err)) + '</p>';
-    }
-  }
-
   // ── passport ──────────────────────────────────────────────────────────────────────────────
 
   function selectOfficer(officerId, name) {
@@ -458,6 +474,7 @@
     $('passport-caution').innerHTML = '';
     $('deep-results').innerHTML = '';
     $('codirectors').innerHTML = '';
+    $('activities').innerHTML = '';
     show($('passport-card'), true);
     show($('observations-card'), true);
     show($('detail-card'), true);
@@ -600,6 +617,42 @@
   $('btn-codirectors').addEventListener('click', function () {
     if (selected) loadCoDirectors(selected.officerId);
   });
+  $('btn-activities').addEventListener('click', function () {
+    if (selected) loadActivities(selected.officerId);
+  });
+
+  // One register call per company, so this is on request only.
+  async function loadActivities(officerId) {
+    $('activities').innerHTML = '';
+    try {
+      var env = await runners.activities.view('BusinessActivities', { officerId: officerId },
+        { expectation: 'Reading each company’s declared activities, one company at a time.' });
+      if (!env) return;
+      var rows = rowsOf(env);
+      if (!rows.length) {
+        $('activities').innerHTML = warningHtml(env) +
+          '<p class="dw-empty">None of these companies declares an activity code.</p>';
+        return;
+      }
+      var body = rows.map(function (r) {
+        return '<tr><td>' + escapeHtml(r.activity) + '</td>' +
+          '<td><span class="dw-pill">' + escapeHtml(r.sicCode) + '</span></td>' +
+          '<td>' + num(r.companyCount) + '</td>' +
+          '<td>' + companyListHtml(r.companies, r.companyNumbers) + '</td></tr>';
+      }).join('');
+      $('activities').innerHTML = warningHtml(env) +
+        '<h3>What these companies say they do</h3>' +
+        '<p class="dw-sub">Activity codes are SELF-DECLARED by each company and are often left at a ' +
+        'broad default, so this records what a company told the register it would do — not what it ' +
+        'did, and not what it earned. A company may declare several activities, so these counts ' +
+        'add up to more than the number of companies.</p>' +
+        '<div class="dw-scroll"><table class="dw-table"><thead><tr><th>Activity</th><th>Code</th>' +
+        '<th>Companies</th><th>Which</th></tr></thead><tbody>' + body + '</tbody></table></div>';
+    } catch (err) {
+      $('activities').innerHTML = '<p class="dw-empty">The register did not answer: ' +
+        escapeHtml(err && err.message || String(err)) + '</p>';
+    }
+  }
 
   // One register call per company, so this is on request only.
   async function loadCoDirectors(officerId) {
