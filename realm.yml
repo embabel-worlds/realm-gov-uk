@@ -1,0 +1,21 @@
+name: gov-uk
+description: >-
+  United Kingdom public-register realm, beginning with Director Web: a free, evidence-linked
+  navigator over Companies House officer records. Anchor an exact officer identifier and traverse
+  its recorded appointments, the companies around them, their co-directors, PSC records and
+  registered addresses — every relationship dated where the register dates it, projected in the
+  register's own words, and linked back to its official source. Recurrence patterns (recurring
+  co-directors, shared addresses, formation bursts, status concentrations) are derived view
+  results with their constituent records attached, never materialised judgments; identity
+  candidates that merely share a name are leads, never merged. This realm reports what the
+  register records and never characterises it. Status: proposal — see DIRECTOR-WEB.md (product)
+  and ARCHITECTURE.md (engineering); no producers are implemented yet.
+version: "0.0.1"
+author: "Embabel"
+url: https://github.com/embabel/realm-gov-uk
+tags:
+  - government
+  - companies-house
+  - united-kingdom
+  - open-data
+  - transparency
