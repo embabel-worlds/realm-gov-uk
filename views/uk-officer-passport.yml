@@ -1,0 +1,180 @@
+# The passport path: name search -> candidate choice -> one officer's record.
+#
+# Every view here is deliberately SMALL and single-purpose, because the product's drill-down
+# contract is that any number a user sees expands to the records behind it in at most two
+# interactions. A view that returned the passport and its evidence in one blob would make that
+# impossible to honour cheaply.
+#
+# The recurring shapes, and why:
+#
+#   · `split(link, '/')[2]` appears in several views. Neither the officer search nor the company
+#     officer list exposes an officer id as a field — both carry it only inside a link path like
+#     '/officers/{id}/appointments'. A producer projection cannot parse, so the split happens here.
+#
+#   · Dates are reported in THREE states, never two. An appointment start is exact
+#     (`appointedOn`), bounded (`appointedBefore`, pre-1992, 15% of sampled appointments), or
+#     absent. Views surface which, and never substitute a bound for a date — doing so would
+#     invent overlaps the register does not support.
+#
+#   · Appointment reads are capped at 50 by the service. Every view over appointments reports
+#     whether it hit that cap, so a partial answer is never presented as a complete one.
+
+- name: OfficerSearchCandidates
+  description: >-
+    Candidate officer records for a name, for a HUMAN to choose between. Companies House can hold
+    several officer records with the same name, including separate records that may refer to the
+    same person, so these are leads and nothing more — a name match establishes no identity at
+    all. Nothing here may be merged, totalled, or carried forward as though a choice had been
+    made. Appointment count and the companies behind it are usually what actually distinguishes
+    two people with the same name.
+  params:
+    query:
+      type: string
+      description: "The name to search for, as a user would type it."
+    minAppointments:
+      type: int
+      default: 0
+      description: "Hide candidates with fewer appointments than this. 0 shows every candidate."
+  cypher: |
+    MATCH (s:UkOfficerSearch {query: $query})-[:FOUND]->(c:UkOfficerCandidate)
+    WHERE coalesce(c.appointmentCount, 0) >= $minAppointments
+    RETURN split(c.officerLink, '/')[2] AS officerId,
+           c.candidateName                AS name,
+           c.appointmentCount             AS appointmentCount,
+           c.dateOfBirthMonth             AS birthMonth,
+           c.dateOfBirthYear              AS birthYear,
+           c.addressSnippet               AS addressSnippet,
+           c.description                  AS registerDescription,
+           'https://find-and-update.company-information.service.gov.uk' + c.officerLink AS officialUrl
+    ORDER BY appointmentCount DESC, name
+
+- name: OfficerPassport
+  description: >-
+    The headline account of ONE Companies House officer record: how many appointments it holds,
+    how many are current, the span they cover, and how many distinct companies are involved. This
+    describes a REGISTER RECORD, not a biography — and that record is itself Companies House's
+    own grouping of underlying register entries, not a raw filing. Counts here are of recorded
+    roles; they say nothing about ownership, control, or responsibility for any company's
+    conduct. If appointmentsRead reaches the cap, the register holds more than was fetched and
+    every count is a floor, not a total.
+  params:
+    officerId:
+      type: string
+      description: "The Companies House officer identifier, from a search candidate."
+  cypher: |
+    MATCH (o:UkOfficerRecord {officerId: $officerId})-[:HELD_APPOINTMENT]->(a:UkAppointment)
+    WITH count(*)                                                        AS appointmentsRead,
+         count(CASE WHEN a.resignedOn IS NULL THEN 1 END)                AS currentAppointments,
+         count(CASE WHEN a.resignedOn IS NOT NULL THEN 1 END)            AS formerAppointments,
+         count(DISTINCT a.companyNumber)                                 AS distinctCompanies,
+         min(a.appointedOn)                                              AS earliestAppointedOn,
+         max(a.appointedOn)                                              AS latestAppointedOn,
+         count(CASE WHEN a.appointedOn IS NULL
+                     AND a.appointedBefore IS NOT NULL THEN 1 END)       AS boundedStartDates,
+         collect(DISTINCT a.officerName)                                 AS recordedNames,
+         collect(DISTINCT a.officerRole)                                 AS recordedRoles
+    RETURN appointmentsRead, currentAppointments, formerAppointments, distinctCompanies,
+           earliestAppointedOn, latestAppointedOn,
+           boundedStartDates,
+           recordedNames, recordedRoles,
+           appointmentsRead >= 50 AS possiblyTruncated,
+           'https://find-and-update.company-information.service.gov.uk/officers/'
+             + $officerId + '/appointments' AS officialUrl
+
+- name: OfficerAppointments
+  description: >-
+    Every appointment fetched for one officer record, one row each, with its company and dates.
+    This is the drill-down behind any count on the passport: a user who reads "appears in 26
+    companies" should reach these rows in one click and the official record in one more. A
+    recorded appointment establishes a role for a period — not share ownership, not operational
+    involvement throughout it, and not responsibility for what the company did.
+  params:
+    officerId:
+      type: string
+      description: "The Companies House officer identifier."
+    status:
+      type: string
+      default: "all"
+      description: "Filter by company status, verbatim (e.g. 'dissolved', 'active'). 'all' applies no filter."
+  cypher: |
+    MATCH (o:UkOfficerRecord {officerId: $officerId})-[:HELD_APPOINTMENT]->(a:UkAppointment)
+    WHERE $status = 'all' OR a.companyStatus = $status
+    RETURN a.companyName        AS companyName,
+           a.companyNumber      AS companyNumber,
+           a.companyStatus      AS companyStatus,
+           a.officerRole        AS officerRole,
+           a.appointedOn        AS appointedOn,
+           a.appointedBefore    AS appointedBefore,
+           CASE WHEN a.appointedOn IS NOT NULL THEN 'exact'
+                WHEN a.appointedBefore IS NOT NULL THEN 'before'
+                ELSE 'unknown' END AS startDateBasis,
+           a.resignedOn         AS resignedOn,
+           a.resignedOn IS NULL AS currentlyRecorded,
+           a.officerName        AS nameOnRecord,
+           'https://find-and-update.company-information.service.gov.uk/company/'
+             + a.companyNumber AS companyUrl
+    ORDER BY coalesce(a.appointedOn, a.appointedBefore) DESC, companyName
+
+- name: OfficerCompaniesByStatus
+  description: >-
+    One officer's companies grouped by the register's EXACT status wording. Dissolution is a
+    legal company status, not a finding of misconduct, and a concentration of it may simply be a
+    long career or a wound-up group. Note what this cannot tell you: the status enum has no
+    strike-off value at all, so whether a dissolution was voluntary or compulsory is not here —
+    it lives in the gazette filings, which OfficerDissolutionManner reads.
+  params:
+    officerId:
+      type: string
+      description: "The Companies House officer identifier."
+  cypher: |
+    MATCH (o:UkOfficerRecord {officerId: $officerId})-[:HELD_APPOINTMENT]->(a:UkAppointment)
+    WITH coalesce(a.companyStatus, '(unstated)') AS status,
+         count(DISTINCT a.companyNumber)         AS companies,
+         collect(DISTINCT a.companyName)         AS companyNames,
+         collect(DISTINCT a.companyNumber)       AS companyNumbers
+    RETURN status, companies, companyNames, companyNumbers
+    ORDER BY companies DESC, status
+
+- name: OfficerTimeline
+  description: >-
+    One officer's recorded appointments and resignations as a single ordered sequence. Events
+    sharing a date are shown together but are NOT thereby related: the register states no common
+    reason, and proximity establishes none. Pre-1992 appointments have no exact date and appear
+    with their upper bound and a 'before' basis rather than being placed at a date the register
+    does not give.
+  params:
+    officerId:
+      type: string
+      description: "The Companies House officer identifier."
+    eventType:
+      type: string
+      default: "all"
+      description: "'appointed', 'resigned', or 'all'."
+  cypher: |
+    MATCH (o:UkOfficerRecord {officerId: $officerId})-[:HELD_APPOINTMENT]->(a:UkAppointment)
+    WITH a, coalesce(a.appointedOn, a.appointedBefore) AS startDate
+    WITH collect({
+           eventDate: startDate,
+           dateBasis: CASE WHEN a.appointedOn IS NOT NULL THEN 'exact'
+                           WHEN a.appointedBefore IS NOT NULL THEN 'before'
+                           ELSE 'unknown' END,
+           eventType: 'appointed',
+           companyName: a.companyName, companyNumber: a.companyNumber,
+           companyStatus: a.companyStatus, officerRole: a.officerRole
+         }) AS appointedEvents,
+         collect(CASE WHEN a.resignedOn IS NOT NULL THEN {
+           eventDate: a.resignedOn, dateBasis: 'exact', eventType: 'resigned',
+           companyName: a.companyName, companyNumber: a.companyNumber,
+           companyStatus: a.companyStatus, officerRole: a.officerRole
+         } END) AS resignedEvents
+    WITH [e IN appointedEvents + resignedEvents WHERE e IS NOT NULL AND e.eventDate IS NOT NULL] AS events
+    UNWIND events AS e
+    WITH e WHERE $eventType = 'all' OR e.eventType = $eventType
+    RETURN e.eventDate     AS eventDate,
+           e.eventType     AS eventType,
+           e.dateBasis     AS dateBasis,
+           e.companyName   AS companyName,
+           e.companyNumber AS companyNumber,
+           e.companyStatus AS companyStatus,
+           e.officerRole   AS officerRole
+    ORDER BY eventDate DESC, companyName

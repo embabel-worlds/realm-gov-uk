@@ -311,6 +311,43 @@ The vendored swagger declares 11 categories. Live responses returned five more:
 > published enum. Treat category as an open vocabulary, project it verbatim, and resolve labels
 > through the vendored enumerations (which *are* current) rather than the swagger.
 
+## 12. The engine cannot express this API's paging (found while building Phase 1)
+
+Companies House pages by **record offset** — `start_index` plus `items_per_page`. The virtual-cypher
+engine supports exactly two paging styles: page NUMBER (it sends `param=1`, then 2, then 3) and
+cursor. Pointing `param: start_index` at the page-number walker would request record offsets 1, 2
+and 3 — re-fetching almost the same rows each time while reporting success, which is the same
+failure the NSW realm hit when its paging params were ignored.
+
+> **Consequence — no producer declares paging, and reads are single-call by design.** Company
+> officers honour a large `items_per_page` (500 asked, 500 echoed), so one call covers all but the
+> most extreme boards. Officer appointments **cap at 50 regardless**, so an officer with more than
+> 50 appointments is read partially. That is disclosed rather than hidden: `OfficerPassport`
+> returns `possiblyTruncated` and `ManyAppointments` returns `countIsAFloor`. The product already
+> requires a capped result to declare its cap; this is where that requirement first bites.
+> `RealmGovUkShapeTest` fails the build if any producer ever declares paging.
+
+Adding an offset paging style to the engine would lift the 50-appointment ceiling for professional
+directors. That is an upstream change to weigh separately — it is the single thing standing between
+Phase 1 and complete coverage of high-degree officers.
+
+## 13. Projection coverage, measured (Phase 1)
+
+`scripts/verify-projections.py` replays each producer's real call and reports how many records
+carried each projected field. Every path resolves. The fields that are legitimately sparse — and
+must therefore never be load-bearing in the UI — are:
+
+| Field | Coverage | Why |
+|---|---|---|
+| `occupation` | **0%** (0/27 and 0/96, two unrelated companies) | The register carries the field but effectively never populates it. Projected so a rare record is not lost; no disambiguation card may rely on it. |
+| search `date_of_birth` | **29%** (58/200) | Month and year only, and only for some officers. It is the product's headline disambiguator, so the candidate card must degrade gracefully without it. |
+| `company_status_detail` | ~0% | Null even on dissolved companies — which is exactly why §5's filing-history path exists. |
+| `appointed_before` | 15% overall, 0% for a modern director | Pre-1992 only. Officer-dependent, not rare in aggregate. |
+| PSC `nationality` / `country_of_residence` | individuals only | A corporate-entity PSC has neither. |
+
+`appointed_to` was confirmed to carry exactly `company_name`, `company_number` and
+`company_status` — nothing more — which is precisely what makes the one-call passport work.
+
 ## Remaining live probes (lower value, deferred to implementation)
 
 Ordered by how much each could still change the design:

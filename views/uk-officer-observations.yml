@@ -1,0 +1,152 @@
+# The three Phase 1 observations, plus the manner-of-dissolution drill-down.
+#
+# What an observation IS here: a reproducible calculation over records already fetched, whose
+# constituent records travel WITH the number so the drill-down contract is satisfied by the row
+# itself. What it is NOT, ever: a score, a ranking of people by suspicion, or a claim that a
+# pattern is unusual. Nothing in this file computes a ratio presented as risk or orders people by
+# anything other than a count the evidence drawer can prove.
+#
+# Every threshold is a PARAMETER WITH A DEFAULT, deliberately. The product promises that its
+# thresholds are editorial, configurable and published — and here the parameters ARE the
+# published methodology, rather than a number buried in code that a methodology page then
+# describes second-hand and eventually inaccurately.
+#
+# Cost note: ManyAppointments and SynchronousRoleChanges run entirely on the ONE passport call.
+# FormationBurst does not — it needs an incorporation date per company, which is one API call per
+# company. It is therefore an explicitly requested expansion, never something a passport render
+# triggers by itself.
+
+- name: ManyAppointments
+  description: >-
+    How many companies one officer record appears in, and the roles involved. Holding many
+    appointments is entirely ordinary for accountants, company-formation agents, corporate group
+    directors and professional trustees; a high count is a reason to look at what the companies
+    have in common, not evidence of anything. Where the read hit the 50-appointment service cap,
+    the count is a FLOOR — the register holds more.
+  params:
+    officerId:
+      type: string
+      description: "The Companies House officer identifier."
+  cypher: |
+    MATCH (o:UkOfficerRecord {officerId: $officerId})-[:HELD_APPOINTMENT]->(a:UkAppointment)
+    WITH count(*)                                             AS appointmentsRead,
+         count(DISTINCT a.companyNumber)                      AS companies,
+         count(CASE WHEN a.resignedOn IS NULL THEN 1 END)     AS currentAppointments,
+         count(CASE WHEN a.resignedOn IS NOT NULL THEN 1 END) AS formerAppointments,
+         min(a.appointedOn)                                   AS firstAppointedOn,
+         max(a.appointedOn)                                   AS lastAppointedOn,
+         collect(DISTINCT a.officerRole)                      AS roles,
+         collect(DISTINCT a.companyNumber)                    AS companyNumbers
+    RETURN companies, appointmentsRead, currentAppointments, formerAppointments,
+           firstAppointedOn, lastAppointedOn, roles, companyNumbers,
+           appointmentsRead >= 50 AS countIsAFloor
+
+- name: SynchronousRoleChanges
+  description: >-
+    Groups of this officer's resignations that fall within a short window of each other, with the
+    companies in each group. A cluster is a useful place to look — the companies may have been
+    restructured, sold, wound up, or simply had a common year-end. The register states NO common
+    reason, and closeness in time establishes none. Clusters overlap by construction: each
+    resignation anchors its own window, so read them as neighbourhoods rather than a partition.
+  params:
+    officerId:
+      type: string
+      description: "The Companies House officer identifier."
+    windowDays:
+      type: int
+      default: 30
+      description: "How close together two resignations must be to fall in one group."
+    minInGroup:
+      type: int
+      default: 3
+      description: "Smallest group worth reporting."
+  cypher: |
+    MATCH (o:UkOfficerRecord {officerId: $officerId})-[:HELD_APPOINTMENT]->(a:UkAppointment)
+    WHERE a.resignedOn IS NOT NULL
+    WITH collect({d: date(a.resignedOn), name: a.companyName, number: a.companyNumber}) AS events
+    UNWIND events AS anchorEvent
+    WITH anchorEvent, events,
+         [e IN events WHERE abs(duration.inDays(anchorEvent.d, e.d).days) <= $windowDays] AS grouped
+    WHERE size(grouped) >= $minInGroup
+    RETURN toString(anchorEvent.d)                AS windowAnchorDate,
+           size(grouped)                          AS resignationsInWindow,
+           toString(reduce(m = anchorEvent.d, e IN grouped | CASE WHEN e.d < m THEN e.d ELSE m END)) AS earliestInWindow,
+           toString(reduce(m = anchorEvent.d, e IN grouped | CASE WHEN e.d > m THEN e.d ELSE m END)) AS latestInWindow,
+           [e IN grouped | e.name]                AS companies,
+           [e IN grouped | e.number]              AS companyNumbers
+    ORDER BY resignationsInWindow DESC, windowAnchorDate DESC
+
+- name: FormationBurst
+  description: >-
+    Groups of this officer's companies incorporated close together in time. Companies in a
+    legitimate group, a fund structure or a property portfolio are very often formed in one
+    batch, so timing alone shows nothing about purpose — it shows where to look for a shared
+    business reason, shared directors or a shared address. COSTS ONE API CALL PER COMPANY, since
+    incorporation dates are not on the appointment record: request it deliberately, not as part
+    of rendering a passport.
+  params:
+    officerId:
+      type: string
+      description: "The Companies House officer identifier."
+    windowDays:
+      type: int
+      default: 120
+      description: "How close together two incorporations must be to fall in one group."
+    minInGroup:
+      type: int
+      default: 3
+      description: "Smallest group worth reporting."
+  cypher: |
+    MATCH (o:UkOfficerRecord {officerId: $officerId})-[:HELD_APPOINTMENT]->(a:UkAppointment)
+    WITH DISTINCT a.companyNumber AS companyNumber
+    MATCH (c:UkCompany {companyNumber: companyNumber})-[:HAS_PROFILE]->(p:UkCompanyProfile)
+    WHERE p.dateOfCreation IS NOT NULL
+    WITH collect({d: date(p.dateOfCreation), name: p.companyName, number: companyNumber,
+                  status: p.companyStatus}) AS formations
+    UNWIND formations AS anchorFormation
+    WITH anchorFormation, formations,
+         [f IN formations WHERE abs(duration.inDays(anchorFormation.d, f.d).days) <= $windowDays] AS grouped
+    WHERE size(grouped) >= $minInGroup
+    RETURN toString(anchorFormation.d)            AS windowAnchorDate,
+           size(grouped)                          AS companiesIncorporatedInWindow,
+           toString(reduce(m = anchorFormation.d, f IN grouped | CASE WHEN f.d < m THEN f.d ELSE m END)) AS earliestInWindow,
+           toString(reduce(m = anchorFormation.d, f IN grouped | CASE WHEN f.d > m THEN f.d ELSE m END)) AS latestInWindow,
+           [f IN grouped | f.name]                AS companies,
+           [f IN grouped | f.number]              AS companyNumbers,
+           [f IN grouped | f.status]              AS companyStatuses
+    ORDER BY companiesIncorporatedInWindow DESC, windowAnchorDate DESC
+
+- name: OfficerDissolutionManner
+  description: >-
+    For one officer's DISSOLVED companies, what the register's gazette filings say about HOW each
+    was dissolved — voluntary strike-off, compulsory strike-off, or an application to strike off.
+    This exists because company status cannot answer it: the status enum has no strike-off value,
+    so a passport that stopped at 'dissolved' would flatten a distinction the register genuinely
+    draws. Voluntary strike-off is a normal, lawful way to close a company that is no longer
+    needed. Costs one API call per dissolved company.
+  params:
+    officerId:
+      type: string
+      description: "The Companies House officer identifier."
+  cypher: |
+    MATCH (o:UkOfficerRecord {officerId: $officerId})-[:HELD_APPOINTMENT]->(a:UkAppointment)
+    WHERE a.companyStatus = 'dissolved'
+    WITH DISTINCT a.companyNumber AS companyNumber, a.companyName AS companyName
+    MATCH (c:UkCompany {companyNumber: companyNumber})-[:HAS_FILING]->(f:UkFilingEvent)
+    WITH companyNumber, companyName,
+         collect(DISTINCT f.filingDescription) AS filingDescriptions,
+         collect(DISTINCT f.filingType)        AS filingTypes,
+         max(f.filingDate)                     AS latestFilingDate
+    RETURN companyName, companyNumber,
+           CASE
+             WHEN any(d IN filingDescriptions WHERE d CONTAINS 'dissolved-voluntary')  THEN 'voluntary strike-off'
+             WHEN any(d IN filingDescriptions WHERE d CONTAINS 'dissolved-compulsory') THEN 'compulsory strike-off'
+             WHEN any(d IN filingDescriptions WHERE d CONTAINS 'strike-off')           THEN 'strike-off applied for'
+             ELSE 'not stated in gazette filings'
+           END                AS mannerOfDissolution,
+           filingDescriptions AS registerFilingDescriptions,
+           filingTypes        AS registerFilingTypes,
+           latestFilingDate,
+           'https://find-and-update.company-information.service.gov.uk/company/'
+             + companyNumber + '/filing-history' AS filingHistoryUrl
+    ORDER BY latestFilingDate DESC, companyName

@@ -1,0 +1,275 @@
+# UK Companies House types.
+#
+# Everything here follows the measurements in PHASE0-FINDINGS.md, taken against the live API on
+# 2026-08-03. The load-bearing ones, because breaking them is silent:
+#
+#   1. An OFFICER RECORD IS ALREADY A MERGE. `officerId` is Companies House's own grouping of
+#      underlying register records — 1.3% of sampled records span several `person_number`s. It is
+#      a supplied judgment, not a raw filing, and the product must SAY SO rather than present it
+#      as unmerged truth. It is still the right identity key: no finer grain is exposed on the
+#      officer-anchored path.
+#
+#   2. AN APPOINTMENT HAS NO ID ON THE OFFICER PATH. Reached from a company, an appointment has
+#      an id in `links.self`; reached from the officer — which is how a passport is built — it
+#      has none. Identity is therefore officer + company + appointedOn, and that composite is
+#      what MERGE keys on. Same-date re-appointment at one company is the theoretical collision;
+#      none was observed.
+#
+#   3. DATES HAVE THREE STATES. 15% of sampled appointments (47 of 318) carry no `appointedOn`
+#      at all: they are pre-1992 and carry `appointedBefore`, an UPPER BOUND. Treating that bound
+#      as a start date manufactures overlaps the register does not support. Any temporal
+#      reasoning must return "unknown", never a guess.
+#
+#   4. STATUS IS THE REGISTER'S WORD, NEVER OURS. `companyStatus` is a closed 12-value enum with
+#      NO strike-off value. Whether a dissolution was voluntary or compulsory exists ONLY in
+#      filing-history gazette entries, which is why UkFilingEvent exists in Phase 1 at all.
+#
+# Every type is `visibility: internal` (reached through views, not the repository tool) and
+# `userAnchor: false` (public register data, identical for every user — never OWNED_BY a user).
+
+# ---------------------------------------------------------------------------------------------
+# Officer-anchored: the passport path.
+# ---------------------------------------------------------------------------------------------
+
+- name: UkAppointment
+  visibility: internal
+  userAnchor: false
+  description: >-
+    One recorded appointment of an officer to a company, as Companies House publishes it. Anchor
+    an officer identifier and traverse to every appointment it holds:
+    `MATCH (o:UkOfficerRecord {officerId:'<id>'})-[:HELD_APPOINTMENT]->(a:UkAppointment)`.
+    Each appointment carries its company's name, number and status inline, so a whole passport —
+    counts, date range, companies by status — is ONE call. A recorded appointment establishes a
+    ROLE FOR A PERIOD and nothing more: not share ownership, not operational involvement
+    throughout, not responsibility for any company decision.
+  # DELIBERATELY NO IDENTITY PROPERTY. The officer-anchored endpoint publishes no appointment id
+  # (measured — see PHASE0-FINDINGS.md §9), and a producer `project:` is a straight JSONPath
+  # extraction with no concatenation, so the composite officer+company+appointedOn key CANNOT be
+  # minted here. Declaring a partial key would be far worse than none: `companyNumber` as identity
+  # would MERGE every officer's appointment at a given company into one node — the same class of
+  # silent collapse that once merged 10,473 gov-au awards down to 261. These rows are live and
+  # query-time; they are never persisted, so they need no MERGE key. If persistence is ever wanted,
+  # reach it through UkCompanyOfficer, whose company-anchored records DO carry a real id.
+  properties:
+    officerId: "The Companies House officer identifier this appointment belongs to. Echoed from the fetch key."
+    companyNumber: "Companies House number of the company appointed to. The exact join key to any company record."
+    companyName: "The company's name as the register holds it now, not necessarily at appointment time."
+    companyStatus: "The company's CURRENT status, verbatim: active, dissolved, liquidation, administration, receivership, voluntary-arrangement, converted-closed, insolvency-proceedings, registered, removed, closed, open. There is no strike-off value here."
+    officerRole: "Verbatim role: director, secretary, llp-member, nominee-director, corporate-director, judicial-factor and 17 others. A 'director web' counts SOME of these; state which."
+    appointedOn: "Exact appointment date (ISO), where the register holds one. ABSENT for pre-1992 appointments — see appointedBefore."
+    appointedBefore:
+      description: >-
+        An UPPER BOUND, present only when isPre1992Appointment is true: the officer was appointed
+        at some unknown time BEFORE this date. Never treat it as a start date. 15% of appointments
+        are in this state.
+    isPre1992Appointment:
+      type: boolean
+      description: "True when the register holds only a bound rather than an appointment date."
+    resignedOn: "Resignation date (ISO) where recorded. Absent means the register shows no resignation, NOT that the role is confirmed current."
+    officerName: "The officer's name as recorded on this appointment. May vary between filings for the same person."
+    nationality: "As recorded, where present."
+    occupation: "As recorded, where present. Often absent."
+    countryOfResidence: "As recorded, where present."
+  virtualJoins:
+    - anchorLabel: UkOfficerRecord
+      relationship: HELD_APPOINTMENT
+      keyField: officerId
+      recordKeyField: officerId
+      producer: officerAppointments
+      description: >-
+        Every appointment Companies House lists for one officer identifier, keyed by that
+        identifier. One call; the service caps a page at 50 appointments.
+
+# ---------------------------------------------------------------------------------------------
+# Company-anchored: the expansion paths. Each costs a call PER COMPANY, so a view must expand
+# deliberately, never as a side effect of rendering a passport.
+# ---------------------------------------------------------------------------------------------
+
+- name: UkCompanyProfile
+  visibility: internal
+  userAnchor: false
+  description: >-
+    One company's register profile, fetched by anchoring its number:
+    `MATCH (c:UkCompany {companyNumber:'01234567'})-[:HAS_PROFILE]->(p:UkCompanyProfile)`.
+    Carries the incorporation date that formation-cluster reasoning needs, and the precise
+    status. Dissolution here is a legal status, never a finding of misconduct, and this profile
+    does NOT say whether a dissolution was voluntary — only filing history does.
+  properties:
+    companyNumber:
+      metadata: { identity: "true" }
+    companyName: "Current registered name."
+    companyStatus: "Verbatim status enum value."
+    companyStatusDetail: "Verbatim qualifier where present, e.g. active-proposal-to-strike-off. Usually absent, INCLUDING on dissolved companies."
+    companyType: "Verbatim type, e.g. ltd, plc, llp."
+    dateOfCreation: "Incorporation date (ISO). The basis of any formation-cluster observation."
+    dateOfCessation: "Date the company was dissolved, closed or removed. Read alongside companyStatus to know which."
+    jurisdiction: "e.g. england-wales, scotland, northern-ireland."
+    sicCodes: "SIC activity codes as published (a list)."
+    registeredOfficeAddressLine1: "First line of the registered office, as rendered by the register."
+    registeredOfficeLocality: "Town or city of the registered office."
+    registeredOfficePostalCode: "Postcode of the registered office. A shared address is a NAVIGATION signal — it may simply be an accountant, solicitor or formation agent."
+    hasInsolvencyHistory:
+      type: boolean
+      description: "As published."
+    hasCharges:
+      type: boolean
+      description: "As published."
+  virtualJoins:
+    - anchorLabel: UkCompany
+      relationship: HAS_PROFILE
+      keyField: companyNumber
+      recordKeyField: companyNumber
+      producer: companyProfile
+      description: The company's own profile record, keyed by company number.
+
+- name: UkCompanyOfficer
+  visibility: internal
+  userAnchor: false
+  description: >-
+    An officer recorded against one company, fetched by anchoring the company number:
+    `MATCH (c:UkCompany {companyNumber:'01234567'})-[:HAS_OFFICER]->(o:UkCompanyOfficer)`.
+    This is the CO-DIRECTOR path: two officers appearing on the same company is a recorded
+    co-appointment, which may reflect an ordinary partnership, a professional service or a
+    corporate group. Whether their terms actually OVERLAPPED is a separate question the dates
+    answer — and cannot answer at all when either side is pre-1992.
+  properties:
+    appointmentLink:
+      metadata: { identity: "true" }
+      description: >-
+        The register's own path to this exact appointment, '/company/{n}/appointments/{id}' —
+        present ONLY on this company-anchored path, and unique, which is why it is the identity
+        here while UkAppointment has none. Also the exact single-record evidence link.
+    companyNumber: "Echoed from the fetch key."
+    officerLink: >-
+      The register's path to this officer's appointments, '/officers/{id}/appointments'. The
+      officer identifier is the third segment — views split it out, because the API exposes the
+      id only inside this link and a projection cannot parse.
+    personNumber: >-
+      The register's person number, '<person prefix><record suffix>'. Its PREFIX is 1:1 with
+      officerId, so it adds no ability to link separate officer records. Kept because it is the
+      join key to the paid bulk products, and because an officerId spanning several person
+      numbers is disclosable provenance about how that record was composed.
+    officerName: "As recorded on this company."
+    officerRole: "Verbatim role."
+    appointedOn: "Exact date, where held."
+    appointedBefore: "Upper bound for pre-1992 appointments. Not a start date."
+    isPre1992Appointment:
+      type: boolean
+    resignedOn: "Where recorded."
+    nationality: "As recorded."
+    occupation: "As recorded."
+  virtualJoins:
+    - anchorLabel: UkCompany
+      relationship: HAS_OFFICER
+      keyField: companyNumber
+      recordKeyField: companyNumber
+      producer: companyOfficers
+      description: Every officer the register lists against one company, keyed by company number.
+
+- name: UkPscRecord
+  visibility: internal
+  userAnchor: false
+  description: >-
+    A person or entity with significant control over one company, exactly as the register records
+    it: `MATCH (c:UkCompany {companyNumber:'01234567'})-[:HAS_PSC]->(p:UkPscRecord)`.
+    A PSC IS NOT A DIRECTOR and a director is not a PSC — never present either as the other, and
+    never describe either as "the owner". Natures of control are codes; their official wording is
+    in apis/companies-house/enumerations/psc_descriptions.yml.
+  properties:
+    pscLink:
+      metadata: { identity: "true" }
+      description: "The register's own path to this PSC record — unique, and the exact evidence link."
+    companyNumber: "Echoed from the fetch key."
+    pscName: "As recorded."
+    kind: "The PSC kind, verbatim: individual-person-with-significant-control, corporate-entity-person-with-significant-control, legal-person-..., super-secure-... ."
+    naturesOfControl: "Control codes as published (a list). Resolve to official wording; never paraphrase."
+    notifiedOn: "When the company notified this PSC (ISO)."
+    ceasedOn: "When the PSC ceased, where recorded."
+    nationality: "As recorded, individuals only."
+    countryOfResidence: "As recorded, individuals only."
+  virtualJoins:
+    - anchorLabel: UkCompany
+      relationship: HAS_PSC
+      keyField: companyNumber
+      recordKeyField: companyNumber
+      producer: companyPscs
+      description: The PSC records held against one company, keyed by company number.
+
+- name: UkFilingEvent
+  visibility: internal
+  userAnchor: false
+  description: >-
+    One filing recorded against a company:
+    `MATCH (c:UkCompany {companyNumber:'01234567'})-[:HAS_FILING]->(f:UkFilingEvent)`.
+    This type exists because the MANNER OF DISSOLUTION lives nowhere else: company status says
+    only 'dissolved', while the gazette filings distinguish voluntary from compulsory strike-off.
+    The fetch is narrowed at source by category, so it costs one focused call rather than a whole
+    filing history. A filing is a dated record that something was FILED — not a finding about it.
+  properties:
+    transactionId:
+      metadata: { identity: "true" }
+      description: "The register's own filing transaction id — unique across the register."
+    companyNumber: "Echoed from the fetch key."
+    category: >-
+      Verbatim category. The live vocabulary is OPEN and exceeds the published enum — gazette
+      and dissolution, the two this feature needs, are both absent from it. Never validate
+      against a fixed list.
+    filingType: "Form type, e.g. GAZ1, GAZ2, DS01."
+    filingDescription: >-
+      The register's description code, e.g. gazette-dissolved-voluntary,
+      gazette-dissolved-compulsory, dissolution-application-strike-off-company. Resolve to
+      official wording via apis/companies-house/enumerations/filing_history_descriptions.yml.
+    filingDate: "Date of the filing (ISO)."
+  virtualJoins:
+    - anchorLabel: UkCompany
+      relationship: HAS_FILING
+      keyField: companyNumber
+      recordKeyField: companyNumber
+      producer: companyDissolutionFilings
+      description: >-
+        Gazette and dissolution filings for one company — the only place the register says
+        whether a strike-off was voluntary or compulsory.
+
+# ---------------------------------------------------------------------------------------------
+# Search: display-only candidates. Deliberately a SEPARATE type from UkAppointment so a
+# same-name lead can never be mistaken for, or counted alongside, an exact officer record.
+# ---------------------------------------------------------------------------------------------
+
+- name: UkOfficerCandidate
+  visibility: internal
+  userAnchor: false
+  description: >-
+    A candidate officer record matching a name search:
+    `MATCH (s:UkOfficerSearch {query:'<name>'})-[:FOUND]->(c:UkOfficerCandidate)`.
+    THESE ARE LEADS, NOT IDENTITIES. Companies House can hold several officer records with the
+    same name, including separate records that may refer to the same person, and matching a name
+    establishes nothing at all. A candidate must never be merged into, or counted within, any
+    total shown for a selected officer. Choosing among them is the user's decision, made from the
+    companies and public details shown.
+  properties:
+    officerLink:
+      metadata: { identity: "true" }
+      description: >-
+        The register's path to this candidate's appointments, '/officers/{id}/appointments'. The
+        search response has NO officer id field — this link is the only carrier, and its third
+        segment is the id a passport anchors on. Views split it; a projection cannot.
+    query: "The search phrase that produced this candidate. Echoed from the fetch key."
+    candidateName: "The matched name as the register renders it for search results."
+    appointmentCount:
+      type: int
+      description: "How many appointments the register holds for this candidate — the most useful disambiguator."
+    dateOfBirthMonth:
+      type: int
+      description: "Birth month. The register publishes month and year only; that is its own privacy posture and we do not narrow it further."
+    dateOfBirthYear:
+      type: int
+      description: "Birth year."
+    addressSnippet: "A single-line address as the register renders it for search results."
+    description: "The register's own one-line summary of the candidate."
+  virtualJoins:
+    - anchorLabel: UkOfficerSearch
+      relationship: FOUND
+      keyField: query
+      recordKeyField: query
+      producer: officerSearch
+      description: Candidate officer records for a name, keyed by the search phrase.

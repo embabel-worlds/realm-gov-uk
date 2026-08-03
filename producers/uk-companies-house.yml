@@ -1,0 +1,218 @@
+# RemoteRepositories over the Companies House Public Data API.
+#
+# Everything here follows from facts measured against the live service on 2026-08-03 and recorded
+# in PHASE0-FINDINGS.md. Four of them shape every producer below:
+#
+#   1. NO PAGING IS DECLARED ANYWHERE, and that is deliberate. Companies House pages by RECORD
+#      OFFSET (`start_index` + `items_per_page`). The engine supports exactly two styles — page
+#      NUMBER (sends 1, 2, 3 …) and cursor. Pointing `param: start_index` at the page-number
+#      walker would request offsets 1, 2, 3, re-fetching almost the same records each time and
+#      reporting success. So each producer makes ONE call with the largest page the endpoint
+#      honours, and anything beyond that is a disclosed truncation rather than a silent one.
+#      Officer appointments cap at 50 per page WHATEVER is asked, so an officer with more than 50
+#      appointments is fetched partially — the product already requires a capped result to
+#      declare its cap, and this is where that requirement bites first.
+#
+#   2. THE FETCH KEY IS NEVER ECHOED BY THE SOURCE. No response repeats the officer id or company
+#      number that was asked for, so every producer sets `echoKeyAs` to stamp it back on. Without
+#      it the join edge silently never forms and the passport comes back empty.
+#
+#   3. IDENTIFIERS HIDE INSIDE `links`. Neither the officer search nor the company officer list
+#      exposes an officer id as a field; both carry it only as a path inside `links`. A `project:`
+#      is a straight JSONPath extraction with no parsing, so producers project the whole link and
+#      views split out the id.
+#
+#   4. THE RATE LIMIT IS THE SCARCE RESOURCE — 600 requests per 5 minutes per application, with
+#      Companies House reserving the right to ban persistent over-users. Hence a shared `cost`
+#      bucket pacing every producer, and generous TTL caching: a shared passport URL is the
+#      product's whole distribution model, so the second reader of a page should cost nothing.
+#      `negativeTtlSeconds` matters too — "this company has no PSCs" is a real answer.
+
+# ---------------------------------------------------------------------------------------------
+# Officer-anchored — the passport. One call per officer.
+# ---------------------------------------------------------------------------------------------
+
+- name: officerAppointments
+  kind: remote
+  operation: officerAppointments
+  records: "$.items[*]"
+  keyArgs: [officer_id]
+  # The appointment items carry the company but never the officer whose list this is.
+  echoKeyAs: officerId
+  # 50 is the service's hard ceiling, not a preference: asking for 100 or 500 still echoes 50.
+  args:
+    items_per_page: 50
+  project:
+    companyNumber: "appointed_to.company_number"
+    companyName: "appointed_to.company_name"
+    companyStatus: "appointed_to.company_status"
+    officerRole: officer_role
+    # appointedOn is ABSENT on pre-1992 records, which instead carry appointedBefore — an upper
+    # bound. 15% of sampled appointments are in that state. Both are projected so a view can tell
+    # "exact", "bounded" and "unknown" apart; neither may stand in for the other.
+    appointedOn: appointed_on
+    appointedBefore: appointed_before
+    isPre1992Appointment: is_pre_1992_appointment
+    resignedOn: resigned_on
+    officerName: name
+    nationality: nationality
+    occupation: occupation
+    countryOfResidence: country_of_residence
+  cache: { kind: ttl, seconds: 3600, negativeTtlSeconds: 900 }
+  cost:
+    bucket: "companies-house"
+    rate: "2/sec"
+    yield: high
+
+# ---------------------------------------------------------------------------------------------
+# Company-anchored — expansions. Each of these costs ONE CALL PER COMPANY, so a view must expand
+# because the user asked, never as a side effect of rendering a passport.
+# ---------------------------------------------------------------------------------------------
+
+- name: companyProfile
+  kind: remote
+  operation: companyProfile
+  records: "$"
+  keyArgs: [company_number]
+  echoKeyAs: companyNumber
+  project:
+    companyName: company_name
+    # Verbatim, both of them. companyStatus is a closed enum with NO strike-off value, and
+    # companyStatusDetail is usually null even on dissolved companies — the manner of dissolution
+    # is only in filing history. Collapsing these into a friendly word loses the register's meaning.
+    companyStatus: company_status
+    companyStatusDetail: company_status_detail
+    companyType: type
+    dateOfCreation: date_of_creation
+    dateOfCessation: date_of_cessation
+    jurisdiction: jurisdiction
+    sicCodes: "sic_codes[*]"
+    registeredOfficeAddressLine1: "registered_office_address.address_line_1"
+    registeredOfficeLocality: "registered_office_address.locality"
+    registeredOfficePostalCode: "registered_office_address.postal_code"
+    hasInsolvencyHistory: has_insolvency_history
+    hasCharges: has_charges
+  cache: { kind: ttl, seconds: 21600, negativeTtlSeconds: 3600 }
+  cost:
+    bucket: "companies-house"
+    rate: "2/sec"
+    yield: high
+
+- name: companyOfficers
+  kind: remote
+  operation: companyOfficers
+  records: "$.items[*]"
+  keyArgs: [company_number]
+  echoKeyAs: companyNumber
+  # This endpoint honours a large page (500 asked, 500 echoed), so one call covers all but the
+  # most extreme boards. Ordering by appointment date keeps a truncated read chronologically
+  # meaningful rather than arbitrary.
+  args:
+    items_per_page: 500
+    order_by: appointed_on
+  project:
+    # links.self is '/company/{n}/appointments/{id}' — unique, so it is this type's identity AND
+    # the exact evidence link. links.officer.appointments is '/officers/{id}/appointments', the
+    # only carrier of the co-director's officer id; the view splits the id out of it.
+    appointmentLink: "links.self"
+    officerLink: "links.officer.appointments"
+    personNumber: person_number
+    officerName: name
+    officerRole: officer_role
+    appointedOn: appointed_on
+    appointedBefore: appointed_before
+    isPre1992Appointment: is_pre_1992_appointment
+    resignedOn: resigned_on
+    nationality: nationality
+    occupation: occupation
+  cache: { kind: ttl, seconds: 3600, negativeTtlSeconds: 900 }
+  cost:
+    bucket: "companies-house"
+    rate: "2/sec"
+    yield: medium
+
+- name: companyPscs
+  kind: remote
+  operation: companyPscs
+  records: "$.items[*]"
+  keyArgs: [company_number]
+  echoKeyAs: companyNumber
+  args:
+    items_per_page: 100
+  project:
+    pscLink: "links.self"
+    pscName: name
+    kind: kind
+    # Codes, not prose. Their official wording lives in the vendored enumerations; paraphrasing a
+    # nature of control is exactly the kind of quiet editorialising this product forbids.
+    naturesOfControl: "natures_of_control[*]"
+    notifiedOn: notified_on
+    ceasedOn: ceased_on
+    nationality: nationality
+    countryOfResidence: country_of_residence
+  # A company with no PSCs is a common, legitimate answer — cache it as firmly as a positive one.
+  cache: { kind: ttl, seconds: 21600, negativeTtlSeconds: 21600 }
+  cost:
+    bucket: "companies-house"
+    rate: "2/sec"
+    yield: medium
+
+- name: companyDissolutionFilings
+  kind: remote
+  operation: companyFilingHistory
+  records: "$.items[*]"
+  keyArgs: [company_number]
+  echoKeyAs: companyNumber
+  # Narrowed at source to the only two categories that answer "HOW was this company dissolved" —
+  # verified live: a comma-separated category list is honoured and returns just those categories.
+  # Neither `gazette` nor `dissolution` appears in the vendor's PUBLISHED category enum, which is
+  # stale; both are live. Never validate this value against that enum.
+  args:
+    category: "gazette,dissolution"
+    items_per_page: 100
+  project:
+    transactionId: transaction_id
+    category: category
+    filingType: type
+    # The register's own description CODE, e.g. gazette-dissolved-voluntary vs
+    # gazette-dissolved-compulsory. This single field is the only place the register states
+    # whether a strike-off was voluntary — company_status never does.
+    filingDescription: description
+    filingDate: date
+  cache: { kind: ttl, seconds: 21600, negativeTtlSeconds: 21600 }
+  cost:
+    bucket: "companies-house"
+    rate: "2/sec"
+    yield: medium
+
+# ---------------------------------------------------------------------------------------------
+# Search — leads only. Kept in its own producer and its own type so a name match can never be
+# counted alongside an exact officer record.
+# ---------------------------------------------------------------------------------------------
+
+- name: officerSearch
+  kind: remote
+  operation: searchOfficers
+  records: "$.items[*]"
+  # A search phrase is one key per call, and the phrase is the arg — not a path parameter.
+  keyArg: q
+  echoKeyAs: query
+  args:
+    items_per_page: 20
+  project:
+    # The ONLY carrier of the officer id in this response. Everything downstream depends on it.
+    officerLink: "links.self"
+    # The register calls the name 'title' here, not 'name' — unlike every other endpoint.
+    candidateName: title
+    appointmentCount: appointment_count
+    # Month and year only. That is the register's own privacy posture, and it is exactly the
+    # granularity disambiguation needs — there is nothing to minimise further.
+    dateOfBirthMonth: "date_of_birth.month"
+    dateOfBirthYear: "date_of_birth.year"
+    addressSnippet: address_snippet
+    description: description
+  cache: { kind: ttl, seconds: 900, negativeTtlSeconds: 900 }
+  cost:
+    bucket: "companies-house"
+    rate: "2/sec"
+    yield: low

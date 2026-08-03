@@ -1,0 +1,138 @@
+# What these collections ARE, as distinct from how producers/ read them.
+#
+# Measured against the live API on 2026-08-03, not assumed. The strategic note first: EVERY
+# source here is live, and that is a measured conclusion rather than a preference. The obvious
+# alternative — mirroring the free Companies House bulk products — cannot work at all for this
+# realm: the free Company Data Product contains no officer, appointment or PSC data (officer bulk
+# data is a PAID product), and it covers LIVE COMPANIES ONLY, excluding exactly the dissolved
+# companies a director web is largely about. See PHASE0-FINDINGS.md §6 before revisiting this.
+#
+# The shape that makes live work here: unlike a procurement feed, the axes people ask on and the
+# axes this source serves are the SAME axis — an officer id, a company number, a name. Every
+# question below is one key, one call, TTL-cached. Nothing needs a whole partition, so no
+# collection declares one.
+#
+# visibility: public throughout — this is the public register, identical for every user. Marking
+# it private would partition identical register data per user and multiply upstream calls by the
+# number of users against a 600-per-5-minutes budget.
+
+sources:
+  - name: ch-officer-appointments
+    producer: officerAppointments
+    label: UkAppointment
+    # No identityProperty: the officer-anchored endpoint publishes no appointment id, and a
+    # projection cannot mint a composite. Declaring a PARTIAL key here would be actively
+    # dangerous — companyNumber as identity would merge every officer's appointment at a company
+    # into one node. These rows are live and query-time; they are never ingested.
+    anchor:
+      label: UkOfficerRecord
+      keyProperty: officerId
+      edge: HELD_APPOINTMENT
+    shape: per-key
+    partition: officer
+    # The officer id IS the fetch key, so it must appear in filterableAtSource too — omitting it
+    # would raise a false "needs whole partition" warning, and a false warning beside real ones is
+    # how real ones come to be ignored.
+    queriedBy: [officerId]
+    filterableAtSource: [officerId]
+    # The list arrives newest-appointment-first; views order by date explicitly rather than trust it.
+    ordering: irrelevant
+    updates: business-days
+    sync:
+      strategy: live
+    # Deliberately NOT `aggregatesRequireComplete: true`. The service caps this endpoint at 50
+    # appointments per page and the engine cannot express its record-offset paging, so an officer
+    # with more than 50 appointments is read partially BY DESIGN. Views must disclose that cap in
+    # their output rather than a gate suppressing the answer entirely — a professional director's
+    # first 50 appointments, honestly labelled, is more useful than nothing.
+    visibility: public
+
+  - name: ch-company-profile
+    producer: companyProfile
+    label: UkCompanyProfile
+    identityProperty: companyNumber
+    anchor:
+      label: UkCompany
+      keyProperty: companyNumber
+      edge: HAS_PROFILE
+    shape: per-key
+    partition: company
+    queriedBy: [companyNumber]
+    filterableAtSource: [companyNumber]
+    updates: business-days
+    sync:
+      strategy: live
+    visibility: public
+
+  - name: ch-company-officers
+    producer: companyOfficers
+    label: UkCompanyOfficer
+    identityProperty: appointmentLink
+    anchor:
+      label: UkCompany
+      keyProperty: companyNumber
+      edge: HAS_OFFICER
+    shape: per-key
+    partition: company
+    queriedBy: [companyNumber]
+    filterableAtSource: [companyNumber]
+    ordering: oldest-first        # ordered by appointed_on, so a truncated read is chronological
+    updates: business-days
+    sync:
+      strategy: live
+    visibility: public
+
+  - name: ch-company-pscs
+    producer: companyPscs
+    label: UkPscRecord
+    identityProperty: pscLink
+    anchor:
+      label: UkCompany
+      keyProperty: companyNumber
+      edge: HAS_PSC
+    shape: per-key
+    partition: company
+    queriedBy: [companyNumber]
+    filterableAtSource: [companyNumber]
+    updates: on-notification-events
+    sync:
+      strategy: live
+    visibility: public
+
+  - name: ch-company-dissolution-filings
+    producer: companyDissolutionFilings
+    label: UkFilingEvent
+    identityProperty: transactionId
+    anchor:
+      label: UkCompany
+      keyProperty: companyNumber
+      edge: HAS_FILING
+    shape: per-key
+    partition: company
+    queriedBy: [companyNumber]
+    filterableAtSource: [companyNumber]
+    ordering: irrelevant
+    updates: on-filing-events
+    sync:
+      strategy: live
+    visibility: public
+
+  - name: ch-officer-search
+    producer: officerSearch
+    label: UkOfficerCandidate
+    identityProperty: officerLink
+    anchor:
+      label: UkOfficerSearch
+      keyProperty: query
+      edge: FOUND
+    shape: bounded
+    partition: query
+    queriedBy: [query]
+    filterableAtSource: [query]
+    # Relevance-ranked by the register and capped at 20. A name search is a LEAD LIST for a human
+    # to choose from, never a result set to count, aggregate or present as complete.
+    ordering: irrelevant
+    updates: business-days
+    sync:
+      strategy: live
+    visibility: public

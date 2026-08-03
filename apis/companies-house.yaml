@@ -1,0 +1,180 @@
+openapi: 3.0.0
+info:
+  title: Companies House Public Data API
+  version: "1.0.0"
+  description: >-
+    The UK register of companies and their officers. Hand-authored and SELF-CONTAINED, covering
+    only the operations this realm calls.
+
+    Why not the vendor's own document: Companies House publishes a Swagger 2.0 spec whose every
+    path is a `$ref` to `http://127.0.0.1:10000/...` — an internal authoring host. The parser
+    cannot resolve those, so the published spec is unusable as a live manifest. The full vendored
+    copy lives under `apis/companies-house/` as REFERENCE (field names, enums, response shapes);
+    this file is what the engine actually loads. Re-check both together on any upstream change.
+
+    Auth is HTTP Basic with the API KEY AS THE USERNAME and a BLANK password. Nothing in the
+    credential path base64-encodes, so `apis.yml` sends a pre-encoded `Authorization` header and
+    this spec declares no security scheme. See apis/README.md.
+
+    Rate limit: 600 requests per 5 minutes per application, and Companies House bans persistent
+    over-users. Every response carries `x-ratelimit-remain`.
+
+servers:
+  - url: https://api.company-information.service.gov.uk
+
+paths:
+  /search/officers:
+    get:
+      operationId: searchOfficers
+      summary: >-
+        Search officers by name. Returns CANDIDATES for disambiguation only — the officer
+        identifier is NOT a field, it must be read out of each item's `links.self`
+        (`/officers/{officer_id}/appointments`). Date of birth is month and year only.
+      parameters:
+        - name: q
+          in: query
+          required: true
+          description: The name being searched for.
+          schema: { type: string }
+        - name: items_per_page
+          in: query
+          description: Results per page.
+          schema: { type: integer }
+        - name: start_index
+          in: query
+          description: First result to return, from 0.
+          schema: { type: integer }
+      responses:
+        "200":
+          description: Candidate officer records.
+          content:
+            application/json:
+              schema: { type: object }
+
+  /officers/{officer_id}/appointments:
+    get:
+      operationId: officerAppointments
+      summary: >-
+        Every appointment recorded for one officer identifier. Each item carries `appointed_to`
+        with the company's name, number and status INLINE, so a passport needs no per-company
+        call. Items carry NO appointment id — identity is officer + company + appointed_on.
+        Pre-1992 appointments have no `appointed_on`; they carry `appointed_before` (an upper
+        bound) with `is_pre_1992_appointment: true`. Caps at 50 items per page whatever is asked.
+      parameters:
+        - name: officer_id
+          in: path
+          required: true
+          description: The officer identifier, as found in a search result's links.
+          schema: { type: string }
+        - name: items_per_page
+          in: query
+          description: Appointments per page. The service caps this at 50.
+          schema: { type: integer }
+        - name: filter
+          in: query
+          description: Use "active" to return only current appointments.
+          schema: { type: string }
+      responses:
+        "200":
+          description: The officer's appointment list.
+          content:
+            application/json:
+              schema: { type: object }
+
+  /company/{company_number}:
+    get:
+      operationId: companyProfile
+      summary: >-
+        One company's profile. `company_status` is a closed enum and contains NO strike-off
+        value; the voluntary-versus-compulsory distinction lives only in filing history.
+        `date_of_creation` is the incorporation date.
+      parameters:
+        - name: company_number
+          in: path
+          required: true
+          schema: { type: string }
+      responses:
+        "200":
+          description: The company profile.
+          content:
+            application/json:
+              schema: { type: object }
+
+  /company/{company_number}/officers:
+    get:
+      operationId: companyOfficers
+      summary: >-
+        The officers recorded against one company. Unlike the officer-anchored endpoint, each
+        item DOES carry an appointment id (in `links.self`) and a `person_number`. Honours a
+        large `items_per_page`.
+      parameters:
+        - name: company_number
+          in: path
+          required: true
+          schema: { type: string }
+        - name: items_per_page
+          in: query
+          schema: { type: integer }
+        - name: order_by
+          in: query
+          description: One of appointed_on, resigned_on, surname.
+          schema: { type: string }
+      responses:
+        "200":
+          description: The company's officer list.
+          content:
+            application/json:
+              schema: { type: object }
+
+  /company/{company_number}/persons-with-significant-control:
+    get:
+      operationId: companyPscs
+      summary: >-
+        Persons with significant control recorded against one company. A PSC is NOT a director
+        and neither implies the other; `natures_of_control` are codes whose official wording is
+        in the vendored enumerations.
+      parameters:
+        - name: company_number
+          in: path
+          required: true
+          schema: { type: string }
+        - name: items_per_page
+          in: query
+          schema: { type: integer }
+      responses:
+        "200":
+          description: The company's PSC list.
+          content:
+            application/json:
+              schema: { type: object }
+
+  /company/{company_number}/filing-history:
+    get:
+      operationId: companyFilingHistory
+      summary: >-
+        One company's filings, narrowable at source by comma-separated `category`. This response
+        reports its size as `total_count`, NOT `total_results` like every other endpoint. The
+        live category vocabulary is OPEN and exceeds the published enum — `gazette` and
+        `dissolution`, which carry the manner of dissolution, are both absent from it.
+      parameters:
+        - name: company_number
+          in: path
+          required: true
+          schema: { type: string }
+        - name: category
+          in: query
+          description: >-
+            One or more comma-separated categories, inclusive. Live values seen include
+            gazette, dissolution, incorporation, officers, address, accounts, resolution,
+            change-of-name, capital, mortgage, auditors, confirmation-statement,
+            persons-with-significant-control and miscellaneous.
+          schema: { type: string }
+        - name: items_per_page
+          in: query
+          schema: { type: integer }
+      responses:
+        "200":
+          description: The company's filing history.
+          content:
+            application/json:
+              schema: { type: object }

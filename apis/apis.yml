@@ -1,0 +1,19 @@
+# Companies House Public Data API.
+#
+# auth: none + an explicit Authorization header is DELIBERATE, not a shortcut. Companies House
+# uses HTTP Basic with the API KEY AS THE USERNAME and a blank password, and nothing in the
+# credential path base64-encodes — `auth: api-key` would send the raw key as the header value,
+# which the service rejects. So the secret holds the pre-encoded form and we send it verbatim.
+#
+# UK_COMPANIES_HOUSE_BASIC = base64("<api key>:")  — note the trailing colon for the empty
+# password. Derive it with:  printf '%s:' "$UK_COMPANIES_HOUSE_API_KEY" | base64
+# Resolution order is credential store -> environment -> server .env / world secrets.
+#
+# The header form still counts as requiring credentials (headers != null), so this realm is
+# correctly gated as connected/unconnected rather than appearing key-free.
+- url: companies-house.yaml
+  name: companiesHouse
+  type: openapi
+  auth: none
+  headers:
+    Authorization: "Basic ${UK_COMPANIES_HOUSE_BASIC}"

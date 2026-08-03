@@ -1,16 +1,24 @@
 name: gov-uk
 description: >-
   United Kingdom public-register realm, beginning with Director Web: a free, evidence-linked
-  navigator over Companies House officer records. Anchor an exact officer identifier and traverse
-  its recorded appointments, the companies around them, their co-directors, PSC records and
-  registered addresses — every relationship dated where the register dates it, projected in the
-  register's own words, and linked back to its official source. Recurrence patterns (recurring
-  co-directors, shared addresses, formation bursts, status concentrations) are derived view
-  results with their constituent records attached, never materialised judgments; identity
-  candidates that merely share a name are leads, never merged. This realm reports what the
-  register records and never characterises it. Status: proposal — see DIRECTOR-WEB.md (product)
-  and ARCHITECTURE.md (engineering); no producers are implemented yet.
-version: "0.0.1"
+  navigator over Companies House officer records. Anchor an officer identifier and traverse every
+  appointment it holds — `MATCH (o:UkOfficerRecord {officerId:'<id>'})-[:HELD_APPOINTMENT]->(a:UkAppointment)`
+  — which returns each company's name, number and status inline, so a whole passport is one call.
+  Anchor a company number instead to expand it: `MATCH (c:UkCompany {companyNumber:'01234567'})`
+  reaches its profile (HAS_PROFILE), its officers and their identifiers (HAS_OFFICER), its persons
+  with significant control (HAS_PSC) and its gazette filings (HAS_FILING) — the only place the
+  register states whether a dissolution was a voluntary or compulsory strike-off, since the status
+  field has no strike-off value at all. Start from a name with
+  `MATCH (s:UkOfficerSearch {query:'<name>'})-[:FOUND]->(c:UkOfficerCandidate)`, whose results are
+  LEADS for a person to choose between and never an identity.
+  Dates come in three states — exact, bounded (pre-1992 appointments give only an upper bound) and
+  unknown — and a bound is never substituted for a date. Recurrence patterns are derived view
+  results carrying the records behind them, never materialised judgments. Officer records that
+  merely share a name are never merged, and an officer identifier is itself Companies House's own
+  grouping of underlying register entries rather than a raw filing. This realm reports what the
+  register records and never characterises it: an appointment, a dissolution or a shared address
+  is a sourced fact, not a finding.
+version: "0.1.0"
 author: "Embabel"
 url: https://github.com/embabel/realm-gov-uk
 tags:
@@ -19,3 +27,22 @@ tags:
   - united-kingdom
   - open-data
   - transparency
+
+# Retry, measured against the live API 2026-08-03. Companies House answered every probe in well
+# under a second across ~150 calls with no transient failure, so this is insurance rather than a
+# workaround. Two deliberate choices:
+#
+#   · `rate-limited` is NOT in retryOn, and must never be added. The limit is 600 requests per 5
+#     minutes per application and Companies House reserves the right to ban applications that
+#     regularly exceed it — retrying a 429 spends the very budget that produced it and turns a
+#     disclosable partial result into a ban risk. A 429 must surface as a partial answer instead.
+#     Every response carries x-ratelimit-remain, so load can be shed BEFORE the limit is reached.
+#   · The key is `retryOn`: a bare `on` is boolean true in YAML 1.1.
+retry:
+  attempts: 3
+  baseBackoff: 300ms
+  multiplier: 2.0
+  jitter: 0.25
+  maxBackoff: 2s
+  retryOn: [timeout, gateway, connection]
+  deadlineShare: 0.2
