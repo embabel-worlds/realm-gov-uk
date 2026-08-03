@@ -1,7 +1,8 @@
 # Director Web — realm architecture
 
-**Status:** proposal — nothing below is measured yet; every "TO MEASURE" must be resolved in
-Phase 0 before the corresponding YAML is written.
+**Status:** proposal. The desk-measurable half of Phase 0 is DONE — see
+[PHASE0-FINDINGS.md](PHASE0-FINDINGS.md), which supersedes this document wherever the two
+disagree. Remaining "TO MEASURE" items need live API responses and are blocked on an API key.
 **Product spec:** [DIRECTOR-WEB.md](DIRECTOR-WEB.md) — the product contract this realm implements.
 **Sibling precedent:** `realm-gov-au` — its `sources.yml` shape declarations, measured-producer
 comments and views-first reporting are the house style this document follows.
@@ -41,7 +42,7 @@ edge stays evidence-linked.
 |---|---|---|
 | `UkOfficerRecord` | `officerId` (Companies House officer identifier) | `identity: true` — one node per register identifier, never per person |
 | `UkCompany` | `companyNumber` | `identity: true` |
-| `UkAppointment` | `appointmentId` (composite `officerId + companyNumber + appointedOn`; TO MEASURE whether the API supplies a stable native id) | `identity: true` |
+| `UkAppointment` | `appointmentId` — composite `officerId + companyNumber + appointedOn`. **MEASURED**: the appointments endpoint supplies no native appointment id, so the composite is required. Live check still needed for same-date re-appointment collisions | `identity: true` |
 | `UkPscRecord` | `pscId` (per-company PSC link id; TO MEASURE stability) | `identity: true` |
 | `UkAddress` | `normalizedAddress` (deterministic normalization; original rendering kept as a property) | `identity: true` — a navigation node, not a claim of shared occupation |
 | `UkCompanyEvent` | `eventId` (composite `companyNumber + type + date`) | `identity: true` |
@@ -76,6 +77,17 @@ The product spec's five levels map onto three distinct mechanisms:
 | 4. Possible same person | compatible attributes, different identifiers | a **view** (`PossibleDuplicateOfficers`) returning candidate pairs with the matching attributes listed; no edge, no merged count |
 | 5. Same name only | search lead | search producer output, displayed and discarded; never persisted as a relationship |
 
+**`person_number` may upgrade level 4.** The company-officers endpoint exposes a `person_number`
+documented as a unique person identifier shared with the paid bulk products. If it proves stable
+across a person's separate officer records, duplicate detection becomes identifier-based rather
+than attribute-based — a materially stronger and more honest basis for the level-4 view. If it is
+per-appointment, it is useless for this. It is the highest-value item on the live-probe list.
+
+**Corporate officers are a sixth case.** `officer_role` spans 23 values and the appointments list
+carries `is_corporate_officer`. A corporate director is not a natural person, so it must be
+excluded from person-shaped observations (recurring co-director, possible duplicate) rather than
+silently counted as one.
+
 The hard invariant, enforced by the row-shape of every aggregate view: levels 4–5 never
 contribute to any count anchored on a selected officer record.
 
@@ -103,18 +115,26 @@ record. Do not build it speculatively.
 
 ### The source
 
-**Companies House Public Data API** — key-authenticated (HTTP basic, key as username), rate
-limited (documented at 600 requests per 5 minutes per key; enforcement behaviour TO MEASURE).
-Unlike gov-au's feeds, the axes users ask on and the axes the source serves are **well aligned**:
-name search, per-officer appointments, per-company profile/officers/PSCs/filing-history are all
-first-class endpoints. That alignment is why v1 is fully live with no mirror.
+**Companies House Public Data API** — key-authenticated (HTTP Basic, **key as username, blank
+password**), rate limited to **600 requests per 5 minutes per application** (confirmed from the
+official guide, which also reserves the right to ban persistent over-users; 429 headers and any
+`Retry-After` still TO MEASURE). Unlike gov-au's feeds, the axes users ask on and the axes the
+source serves are **well aligned**: name search, per-officer appointments, per-company
+profile/officers/PSCs/filing-history are all first-class endpoints.
+
+**v1 is live-per-key with no mirror, and that is now a measured conclusion.** The free bulk
+products cannot serve this product at all: the Free Company Data Product carries no officer,
+appointment or PSC-to-officer data (officer bulk data is a *paid* product) and covers **live
+companies only**, excluding the dissolved companies this product is largely about. The free PSC
+snapshot is complete and remains a candidate future mirror for PSC-side questions only. See
+PHASE0-FINDINGS.md §6 — do not revisit bulk as an optimisation.
 
 Access paths, one producer each:
 
 | Producer | Endpoint | Shape | Creates |
 |---|---|---|---|
-| `officerSearch` | `GET /search/officers?q=` | bounded (paged; page semantics TO MEASURE) | search candidates — **display-only**, not persisted as identity |
-| `officerAppointments` | `GET /officers/{officer_id}/appointments` | per-key, paged | `UkOfficerRecord`, `UkAppointment`, stub `UkCompany` per appointment |
+| `officerSearch` | `GET /search/officers?q=` | bounded, paged (`items_per_page`, `start_index`) | search candidates — **display-only**. Returns no officer id field; it must be parsed from the item's `links` URL. DOB is month+year only |
+| `officerAppointments` | `GET /officers/{officer_id}/appointments` (`filter=active`, paged) | per-key, paged | `UkOfficerRecord`, `UkAppointment`, and a **fully-named** `UkCompany` — `appointed_to` carries company name, number and status inline |
 | `companyProfile` | `GET /company/{companyNumber}` | per-key | `UkCompany` (status verbatim), `UkCompanyEvent` (incorporation, status) |
 | `companyOfficers` | `GET /company/{companyNumber}/officers` | per-key, paged | co-director `UkOfficerRecord` + `UkAppointment` |
 | `companyPscs` | `GET /company/{companyNumber}/persons-with-significant-control` | per-key, paged | `UkPscRecord` |
@@ -129,16 +149,47 @@ resigned-officer record looks like versus a current one.
 
 The 600/5min budget is the realm's scarcest resource and shapes everything:
 
-- **Fan-out is a budget decision, not just a UX one.** A passport for an officer with N
-  appointments costs roughly `1 (appointments, paged) + N (company profiles)` calls; expanding a
-  company costs 2–3 more (officers, PSCs, filing history). Producer TTL caching makes the second
-  viewer of a shared page nearly free — and cached pages are exactly the product's share model.
+- **The passport is one paged call, not `1 + N`.** Because `appointed_to` carries company name,
+  number and status inline, every passport headline — appointment counts, date range, companies
+  grouped by status — comes from the appointments call alone. Per-company profile, officers, PSC
+  and filing-history calls are **expansion** costs the user triggers explicitly, roughly 2–4 per
+  expanded company. Producer TTL caching makes the second viewer of a shared page nearly free,
+  which is exactly the product's share model.
+- **Manner of dissolution costs one filing-history call per dissolved company.** See "Status
+  wording" below — this is the one place the product's promises exceed what a single call
+  returns.
 - `realm.yml` retry policy mirrors gov-au's: retry transport failures only, never HTTP errors —
   and specifically **never 429**, which must instead surface as a partial-result warning
   ("register busy, N of M companies loaded") so a rate-limited page renders as partial, not
   complete. This is the product spec's partial-rendering requirement landing in the realm layer.
 - The per-key API credential lives in the credential store, referenced from `apis/`; never in
   this repo.
+
+### Status wording — the register does not say "voluntarily struck off"
+
+`company_status` is a closed 12-value enum and **contains no strike-off value**;
+`company_status_detail` offers `active-proposal-to-strike-off` only. The voluntary-versus-
+compulsory distinction the product spec demands exists solely in **filing-history gazette
+entries** (`gazette-dissolved-voluntary`, `gazette-dissolved-compulsary`, and the
+`dissolution-application-strike-off-*` types).
+
+The realm's position: `UkCompany.status` and `.statusDetail` are projected verbatim from the
+enum, and the **manner of dissolution is a separate, filing-derived statement** carrying its
+gazette entry as evidence — never presented as a status. It is fetched only for dissolved
+companies, and only inside the `StatusConcentration` drill-down where a user is asking the
+question. Human wording for every code comes from the vendored enumeration mappings, including
+`cessation_label_for_status` for cessation dates, so the app never invents phrasing.
+
+This needs a matching edit to the product spec's release gate, which currently reads as though
+the status field itself distinguishes strike-off. See PHASE0-FINDINGS.md §5.
+
+### Dates have three states, not two
+
+Appointments carry `is_pre_1992_appointment` and `appointed_before` (an upper bound, not a
+date). Every temporal calculation therefore resolves to exact, bounded, or unknown — and
+`RecurringCoDirectors` must return `overlap: unknown` for bounded dates rather than treating the
+bound as a start. Imputing a bound as a date would manufacture overlaps the register does not
+support, which is precisely the inference the product forbids.
 
 ### `sources.yml` sketch
 
@@ -258,15 +309,26 @@ Engineering exit gates alongside the product spec's:
 
 Carried from the product spec plus this document's own:
 
+**Resolved by the Phase 0 desk spike:**
+
+- ~~Does the appointments endpoint supply a native appointment id?~~ **No** — the composite key
+  is required.
+- ~~Do bulk snapshots offer a mirror path?~~ **No** — no free officer data, live companies only.
+- ~~Is filing history filterable by category at source?~~ **Yes** — an 11-value inclusive,
+  comma-separated `category` parameter.
+
+**Still open:**
+
 1. Public URL key: raw `officerId` or an opaque internal key? (Leaning raw — it *is* the public
-   register identifier and the honesty story; revisit only if Phase 0 shows identifier churn.)
-2. Does the appointments endpoint supply a stable native appointment id, or is the composite key
-   required? (Determines `UkAppointment` identity.)
-3. Can historical registered-office addresses be fetched consistently enough to make address
-   overlap temporal? (Filing-history category coverage — TO MEASURE.)
-4. At what officer-degree does the passport itself need a cap (professional directors with
+   register identifier and the honesty story; revisit only if live probing shows identifier churn.)
+2. Is `person_number` stable across a person's separate officer records? (Could replace
+   attribute-based duplicate detection entirely — highest-value live probe.)
+3. Can the composite appointment key collide, via same-date re-appointment at one company?
+4. Can historical registered-office addresses be fetched consistently enough to make address
+   overlap temporal? (Now a question about the `address` filing-history category specifically.)
+5. At what officer-degree does the passport itself need a cap (professional directors with
    hundreds of appointments), and what does the capped passport promise?
-5. Where does address normalization run — producer projection (deterministic, cache-friendly) or
+6. Where does address normalization run — producer projection (deterministic, cache-friendly) or
    view-time? (Leaning producer, so `UkAddress` identity is stable.)
-6. Whether recurrence questions ever need the bulk snapshots as a mirror — decide only on
-   evidence of a live-path question that cannot be served within the rate budget.
+7. Does the product keep the voluntary-strike-off promise at one extra call per dissolved
+   company, or reword the release gate? (Product decision — see PHASE0-FINDINGS.md §5.)
