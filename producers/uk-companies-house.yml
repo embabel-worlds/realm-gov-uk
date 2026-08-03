@@ -220,3 +220,29 @@
     bucket: "companies-house"
     rate: "2/sec"
     yield: low
+
+- name: companyInsolvency
+  kind: remote
+  operation: companyInsolvency
+  # ONE record per company, not one per case. The cases carry no identifier that is unique across
+  # companies (a case is numbered 1, 2, 3 within its own company), and a projection cannot mint a
+  # composite — so a per-case node would have no honest identity. Collapsing to one record keyed by
+  # company number keeps the identity exact and puts the cases in list properties beside it.
+  records: "$"
+  keyArgs: [company_number]
+  echoKeyAs: companyNumber
+  project:
+    insolvencyStatus: "status[*]"
+    caseTypes: "cases[*].type"
+    caseNumbers: "cases[*].number"
+    # The register nests dates inside each case. Only the FIRST case's dates are projected — a
+    # second level of array flattening is not something the projection language promises, and a
+    # quietly wrong path here would read as "no dates" rather than as an error.
+    firstCaseDateType: "cases.0.dates.0.type"
+    firstCaseDate: "cases.0.dates.0.date"
+    firstCasePractitioners: "cases.0.practitioners[*].name"
+  cache: { kind: ttl, seconds: 21600, negativeTtlSeconds: 21600 }
+  cost:
+    bucket: "companies-house"
+    rate: "2/sec"
+    yield: medium

@@ -241,3 +241,59 @@
            size(companies) AS companyCount,
            companies, companyNumbers
     ORDER BY companyCount DESC, activity
+
+- name: CompanyInsolvencyHistory
+  description: >-
+    Which of this person's companies have an insolvency record, what kind of case, when, and which
+    practitioners were appointed. Insolvency is a lawful statutory process, not a finding against
+    anyone: a company that cannot pay its debts is SUPPOSED to enter one, and the director who
+    does so is following the law rather than breaking it. A practitioner named here is an
+    appointed professional, not a participant in the company's conduct. Costs one register call
+    per company.
+  params:
+    officerId:
+      type: string
+      description: "The Companies House officer identifier."
+  cypher: |
+    MATCH (o:UkOfficerRecord {officerId: $officerId})-[:HELD_APPOINTMENT]->(a:UkAppointment)
+    WITH DISTINCT a.companyNumber AS companyNumber, a.companyName AS companyName
+    MATCH (c:UkCompany {companyNumber: companyNumber})-[:HAS_INSOLVENCY]->(i:UkInsolvencyRecord)
+    WHERE i.caseTypes IS NOT NULL OR i.insolvencyStatus IS NOT NULL
+    RETURN companyName, companyNumber,
+           i.insolvencyStatus       AS registerStatus,
+           i.caseTypes              AS caseTypes,
+           i.firstCaseDateType      AS firstEventType,
+           i.firstCaseDate          AS firstEventDate,
+           i.firstCasePractitioners AS practitioners,
+           'https://find-and-update.company-information.service.gov.uk/company/'
+             + companyNumber + '/insolvency' AS officialUrl
+    ORDER BY firstEventDate DESC, companyName
+
+- name: SanctionsNameCheck
+  description: >-
+    Designations on the UK sanctions list that share a SURNAME with the name given. Nothing here
+    says anyone is sanctioned.
+
+    The list carries no company number and no Companies House identifier, so a name is the only
+    thing that can be compared — and a surname alone is very weak. Common surnames return many
+    designations belonging to people with no connection to the person being read about. The date
+    of birth is the most useful column precisely because it usually rules a match OUT: if the
+    person's recorded birth year differs, the designation is not them. Read every row as a
+    question to resolve against the official list, and never as a label on anyone.
+  params:
+    surname:
+      type: string
+      description: "The family name to check, on its own."
+  cypher: |
+    MATCH (s:UkSanctionsCheck {surname: $surname})-[:POSSIBLE_MATCH]->(e:UkSanctionsEntry)
+    RETURN e.groupId              AS designationId,
+           trim(coalesce(e.title, '') + ' ' + coalesce(e.forename1, '') + ' '
+                + coalesce(e.forename2, '') + ' ' + coalesce(e.surname, '')) AS listedName,
+           e.groupType            AS designationOf,
+           e.regime               AS regime,
+           e.dateOfBirth          AS dateOfBirth,
+           e.nationality          AS nationality,
+           e.position             AS position,
+           e.statementOfReasons   AS statementOfReasons,
+           e.listedOn             AS listedOn
+    ORDER BY listedName

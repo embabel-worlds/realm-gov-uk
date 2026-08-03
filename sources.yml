@@ -138,3 +138,42 @@ sources:
     sync:
       strategy: live
     visibility: public
+
+  - name: ch-company-insolvency
+    producer: companyInsolvency
+    label: UkInsolvencyRecord
+    identityProperty: companyNumber
+    anchor:
+      label: UkCompany
+      keyProperty: companyNumber
+      edge: HAS_INSOLVENCY
+    shape: per-key
+    partition: company
+    queriedBy: [companyNumber]
+    filterableAtSource: [companyNumber]
+    updates: on-insolvency-events
+    sync:
+      strategy: live
+    visibility: public
+
+  - name: ofsi-sanctions-by-surname
+    producer: sanctionsBySurname
+    label: UkSanctionsEntry
+    identityProperty: groupId
+    anchor:
+      label: UkSanctionsCheck
+      keyProperty: surname
+      edge: POSSIBLE_MATCH
+    # The whole list is ONE file we hold and filter locally, so a surname read is bounded by the
+    # file rather than by a remote query. No key, no rate limit -- but also no identifier to join
+    # on, which is why the contract is named a possible match and the view says so.
+    shape: bounded
+    cardinality: 20000
+    partition: surname
+    queriedBy: [surname]
+    filterableAtSource: [surname]
+    ordering: irrelevant
+    updates: on-designation-changes
+    sync:
+      strategy: live
+    visibility: public

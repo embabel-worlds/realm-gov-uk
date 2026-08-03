@@ -1,0 +1,44 @@
+# The UK sanctions list, from OFSI's published consolidated file.
+#
+# In its OWN file, deliberately: a realm file that fails to parse is dropped WHOLE by the loader,
+# and this producer reads a large third-party CSV whose shape is outside our control. Keeping it
+# separate means an upstream format change costs the sanctions check, never the Companies House
+# producers beside it.
+#
+# Measured 2026-08-03: 15.9 MB, no key required, and the file opens with a one-line
+# "Last Updated,<date>" banner ABOVE the real header — hence headerRow: 2. Reading the banner as
+# the schema would silently give every column the wrong name.
+#
+# This producer is a NAME LOOKUP and nothing more. The list carries no company number and no
+# Companies House person number, so there is no identifier to join on — only names, and dates of
+# birth where the list publishes them. Everything it returns is a POSSIBLE match for a human to
+# check, which is why the surname is the fetch key and the view that reads it says so loudly.
+
+- name: sanctionsBySurname
+  kind: tabular
+  url: "https://ofsistorage.blob.core.windows.net/publishlive/2022format/ConList.csv"
+  format: csv
+  headerRow: 2
+  keyColumn: "Name 6"
+  keyMatch: ci
+  keyAs: surnameQueried
+  # A designation can appear on several rows (aliases and alternative spellings share a Group ID),
+  # so rows collapse to one entry per designated person or entity.
+  project:
+    groupId: "Group ID"
+    surname: "Name 6"
+    forename1: "Name 1"
+    forename2: "Name 2"
+    title: "Title"
+    groupType: "Group Type"
+    regime: "Regime"
+    dateOfBirth: "DOB"
+    nationality: "Nationality"
+    countryOfBirth: "Country of Birth"
+    position: "Position"
+    statementOfReasons: "UK Statement of Reasons"
+    listedOn: "Listed On"
+    lastUpdated: "Last Updated"
+  # The file changes when OFSI republishes it, which is often but not continuously.
+  fileCacheSeconds: 21600
+  maxRowsPerKey: 200

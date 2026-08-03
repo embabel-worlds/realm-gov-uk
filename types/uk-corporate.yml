@@ -311,3 +311,132 @@
       identity: true
       description: "The four- or five-digit SIC 2007 code as the register publishes it. Identity key."
     description: "The official description of that activity."
+
+# ---------------------------------------------------------------------------------------------
+# ANCHOR TYPES. These are the labels queries PIN to reach everything above — they hold no fetched
+# data of their own, only the key.
+#
+# They are declared for a reason. An anchor pinned to a LITERAL works whether or not its label is
+# declared (the passport proves it: `MATCH (o:UkOfficerRecord {officerId: '…'})` probes and fetches
+# fine). An anchor seeded from a VARIABLE — `MATCH (c:UkCompany {companyNumber: companyNumber})`,
+# which every company-anchored expansion uses — needs the engine to know the label's identity
+# property to bind it. Undeclared, the registry reports no identity properties for the label at all.
+# gov-au declares GrantWindow for the same reason and keeps it to its key alone.
+# ---------------------------------------------------------------------------------------------
+
+- name: UkOfficerRecord
+  visibility: internal
+  userAnchor: false
+  description: >-
+    An anchor for one Companies House officer identifier. Pin it to reach that record's
+    appointments. It holds no data itself — the identifier IS the record, and that identifier is
+    Companies House's own grouping of underlying register entries rather than a raw filing.
+  properties:
+    officerId:
+      identity: true
+      description: "The Companies House officer identifier. Identity key."
+
+- name: UkCompany
+  visibility: internal
+  userAnchor: false
+  description: >-
+    An anchor for one company, by its Companies House number. Pin it to reach that company's
+    profile, officers, persons with significant control, insolvency record or filings. The number
+    is the exact join key to every other UK register.
+  properties:
+    companyNumber:
+      identity: true
+      description: "Companies House company number, e.g. '01234567' or 'OC350876'. Identity key."
+
+- name: UkOfficerSearch
+  visibility: internal
+  userAnchor: false
+  description: >-
+    An anchor for one officer NAME SEARCH. Pin a name to reach its candidate records. Candidates
+    are leads for a person to choose between, never an identity.
+  properties:
+    query:
+      identity: true
+      description: "The name searched for, as typed. Identity key."
+
+- name: UkInsolvencyRecord
+  visibility: internal
+  userAnchor: false
+  description: >-
+    One company's insolvency record, fetched by anchoring its number:
+    `MATCH (c:UkCompany {companyNumber:'01234567'})-[:HAS_INSOLVENCY]->(i:UkInsolvencyRecord)`.
+    Insolvency is a LAWFUL LEGAL PROCESS with its own statutory procedure — a liquidation or an
+    administration is not a finding against a director, and appointing an insolvency practitioner
+    is the correct thing to do when a company cannot pay its debts. A company whose status says
+    'liquidation' sometimes returns no case at all; that is a gap in the register, not evidence
+    that nothing happened.
+  properties:
+    companyNumber:
+      metadata: { identity: "true" }
+      description: >-
+        The company this record belongs to. ONE record per company rather than one per case: a
+        case is numbered within its own company (1, 2, 3), so a per-case node would have no
+        identity that is unique across companies, and a projection cannot mint a composite.
+    insolvencyStatus: "The register's own status words for the record (a list)."
+    caseTypes: "Verbatim case types (a list), e.g. compulsory-liquidation, creditors-voluntary-liquidation, administration."
+    caseNumbers: "The case numbers, within this company (a list)."
+    firstCaseDateType: "What the first case's first date MEANS, verbatim, e.g. wound-up-on."
+    firstCaseDate: "That date (ISO). Only the FIRST case's first date is projected — see the producer note."
+    firstCasePractitioners: "Names of the insolvency practitioners on the first case (a list). A practitioner is an appointed professional, not a party to the company's conduct."
+  virtualJoins:
+    - anchorLabel: UkCompany
+      relationship: HAS_INSOLVENCY
+      keyField: companyNumber
+      recordKeyField: companyNumber
+      producer: companyInsolvency
+      description: The company's insolvency cases, keyed by company number.
+
+- name: UkSanctionsEntry
+  visibility: internal
+  userAnchor: false
+  description: >-
+    A designation on the UK sanctions list, reached by checking ONE SURNAME:
+    `MATCH (s:UkSanctionsCheck {surname:'<surname>'})-[:POSSIBLE_MATCH]->(e:UkSanctionsEntry)`.
+
+    THIS IS A NAME MATCH AND NOTHING MORE, and the edge is named to say so. The list publishes no
+    company number and no Companies House person number, so there is NO identifier to join on —
+    only names, with dates of birth on some entries. A shared surname is extremely weak evidence:
+    common surnames return many designations, and none of them need be the person being read
+    about. Treat every row as a question for a human to resolve against the official list, never
+    as a statement that anyone is sanctioned, and never let one near a total or a badge.
+  properties:
+    groupId:
+      metadata: { identity: "true" }
+      description: "OFSI's group identifier for the designated person or entity. Aliases share it, so one entry is one designation."
+    surnameQueried: "The surname this entry was matched against. Echoed from the fetch key."
+    surname: "Family name as listed."
+    forename1: "First given name as listed."
+    forename2: "Second given name as listed."
+    title: "Title as listed."
+    groupType: "Individual, Entity or Ship."
+    regime: "The sanctions regime under which the designation was made."
+    dateOfBirth: "Date of birth where the list publishes one — the single most useful thing for ruling a match OUT."
+    nationality: "As listed."
+    countryOfBirth: "As listed."
+    position: "Stated position or role, where listed."
+    statementOfReasons: "The UK statement of reasons for the designation, verbatim."
+    listedOn: "When the designation was made."
+    lastUpdated: "When the entry was last amended."
+  virtualJoins:
+    - anchorLabel: UkSanctionsCheck
+      relationship: POSSIBLE_MATCH
+      keyField: surname
+      recordKeyField: surnameQueried
+      producer: sanctionsBySurname
+      description: Designations whose family name matches the surname checked. A lead, never a finding.
+
+- name: UkSanctionsCheck
+  visibility: internal
+  userAnchor: false
+  description: >-
+    An anchor for one surname being checked against the UK sanctions list. Pin a surname to see
+    designations sharing it. The check is by name only.
+  properties:
+    surname:
+      identity: true
+      description: "The family name to check. Identity key."

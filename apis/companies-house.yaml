@@ -148,6 +148,27 @@ paths:
             application/json:
               schema: { type: object }
 
+  /company/{company_number}/insolvency:
+    get:
+      operationId: companyInsolvency
+      summary: >-
+        A company's insolvency cases as the register records them — case type (compulsory
+        liquidation, creditors-voluntary-liquidation, administration, receivership …), the dated
+        events of each, and the appointed insolvency practitioners. Insolvency is a lawful legal
+        process, not a finding against anyone. A company whose status is 'liquidation' sometimes
+        returns no cases at all; that is a gap in the register, not evidence of absence.
+      parameters:
+        - name: company_number
+          in: path
+          required: true
+          schema: { type: string }
+      responses:
+        "200":
+          description: The company's insolvency record.
+          content:
+            application/json:
+              schema: { type: object }
+
   /company/{company_number}/filing-history:
     get:
       operationId: companyFilingHistory
