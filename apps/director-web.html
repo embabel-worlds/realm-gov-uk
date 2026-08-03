@@ -1,0 +1,679 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Director Web — who is this person, on the public record?</title>
+<meta name="description" content="Search a UK director by name, choose the right Companies House officer record, and read a plain-language account of where it appears — every figure sourced to the official register, nothing characterised.">
+<link rel="stylesheet" href="/api/v1/apps-runtime/v1/theme.css">
+<script src="/api/v1/apps-runtime/v1/embabel.js"></script>
+<script type="application/embabel-app+json">
+{"version":1,"name":"director-web","requires":{"lenses":[],"views":["OfficerSearchCandidates","OfficerPassport","OfficerAppointments","OfficerCompaniesByStatus","OfficerTimeline","ManyAppointments","SynchronousRoleChanges","FormationBurst","OfficerDissolutionManner"],"realms":["gov-uk"],"namespaces":[]}}
+</script>
+<style>
+  /* Rides the v1 theme tokens and recolours only the accent pair, so shared components stay
+     coherent. A deliberately sober palette: this app reports a public register, and a lurid
+     "investigation" aesthetic would editorialise before a word is read. */
+  :root {
+    --embabel-accent: #2f6f5e;
+    --embabel-accent-strong: #215144;
+    --dw-ink-soft: color-mix(in srgb, var(--embabel-text) 66%, transparent);
+    --dw-rule: color-mix(in srgb, var(--embabel-border) 80%, transparent);
+  }
+  @media (prefers-color-scheme: dark) {
+    :root { --embabel-accent: #6fc7ac; --embabel-accent-strong: #97dcc6; }
+    .embabel-button:not(.embabel-button--quiet) { color: #08120f; }
+  }
+
+  /* Standalone fallback. Opened without a host (a local preview, or the offline browser suite)
+     the runtime's theme.css 404s and every --embabel-* token is undefined, which renders the app
+     as unstyled serif text with no card surfaces at all. So re-declare the v1 tokens and the few
+     shared component styles this app uses, scoped under .no-runtime, so a HOSTED run still takes
+     theme.css as the single source of truth. */
+  html.no-runtime {
+    color-scheme: light dark;
+    --embabel-bg: #f6f7f9; --embabel-surface: #ffffff; --embabel-surface-subtle: #eef1f5;
+    --embabel-text: #17202a; --embabel-text-muted: #657080; --embabel-border: #d9dee7;
+    --embabel-warning: #8a5a00; --embabel-warning-bg: #fff8df;
+    --embabel-error: #a93226; --embabel-error-bg: #fff0ee;
+    --embabel-radius-sm: 8px; --embabel-radius: 14px;
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;
+  }
+  @media (prefers-color-scheme: dark) {
+    html.no-runtime {
+      --embabel-bg: #0f1216; --embabel-surface: #161b21; --embabel-surface-subtle: #1c222a;
+      --embabel-text: #e6eaef; --embabel-text-muted: #93a0b0; --embabel-border: #29313b;
+      --embabel-warning: #e8c06a; --embabel-warning-bg: #2a2313;
+      --embabel-error: #f0a094; --embabel-error-bg: #2c1815;
+    }
+  }
+  html.no-runtime body { background: var(--embabel-bg); color: var(--embabel-text); }
+  html.no-runtime .embabel-button {
+    padding: 10px 16px; font: inherit; font-size: 0.92rem; cursor: pointer;
+    background: var(--embabel-accent); color: #fff; border: 1px solid transparent;
+    border-radius: var(--embabel-radius-sm);
+  }
+  html.no-runtime .embabel-button--quiet {
+    background: transparent; color: var(--embabel-accent); border-color: var(--embabel-border);
+  }
+  html.no-runtime embabel-operation-state { display: block; }
+
+  body { margin: 0; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif; }
+  .dw-wrap { max-width: 1080px; margin: 0 auto; padding: 24px 20px 88px; }
+
+  header.dw-head { margin-bottom: 22px; }
+  .dw-head h1 { margin: 0 0 6px; font-size: 1.65rem; letter-spacing: -0.01em; }
+  .dw-head p { margin: 0; color: var(--dw-ink-soft); max-width: 62ch; line-height: 1.5; }
+
+  .dw-card {
+    background: var(--embabel-surface); border: 1px solid var(--embabel-border);
+    border-radius: var(--embabel-radius); padding: 18px; margin-bottom: 18px;
+  }
+  .dw-card h2 { margin: 0 0 4px; font-size: 1.05rem; }
+  .dw-card h3 { margin: 0 0 10px; font-size: 0.95rem; }
+  .dw-sub { color: var(--dw-ink-soft); font-size: 0.88rem; margin: 0 0 14px; line-height: 1.5; }
+
+  form.dw-search { display: flex; gap: 10px; flex-wrap: wrap; }
+  form.dw-search input[type=search] {
+    flex: 1 1 260px; padding: 11px 13px; font-size: 1rem; color: var(--embabel-text);
+    background: var(--embabel-bg); border: 1px solid var(--embabel-border);
+    border-radius: var(--embabel-radius-sm);
+  }
+  form.dw-search input[type=search]:focus { outline: 2px solid var(--embabel-accent); outline-offset: 1px; }
+
+  .dw-candidates { display: grid; gap: 10px; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); }
+  .dw-candidate {
+    text-align: left; width: 100%; cursor: pointer; padding: 13px 14px;
+    background: var(--embabel-bg); color: var(--embabel-text);
+    border: 1px solid var(--embabel-border); border-radius: var(--embabel-radius-sm);
+    display: flex; flex-direction: column; gap: 5px; font: inherit;
+  }
+  .dw-candidate:hover, .dw-candidate:focus-visible { border-color: var(--embabel-accent); }
+  .dw-candidate .dw-cname { font-weight: 600; }
+  .dw-candidate .dw-cmeta { font-size: 0.82rem; color: var(--dw-ink-soft); line-height: 1.45; }
+
+  .dw-tiles { display: grid; gap: 10px; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); margin-bottom: 14px; }
+  .dw-tile { background: var(--embabel-bg); border: 1px solid var(--dw-rule); border-radius: var(--embabel-radius-sm); padding: 11px 13px; }
+  .dw-tile .dw-n { font-size: 1.5rem; font-variant-numeric: tabular-nums; line-height: 1.15; }
+  .dw-tile .dw-l { font-size: 0.76rem; color: var(--dw-ink-soft); text-transform: uppercase; letter-spacing: 0.04em; }
+
+  .dw-obs { border: 1px solid var(--dw-rule); border-left: 3px solid var(--embabel-accent); border-radius: var(--embabel-radius-sm); padding: 13px 15px; margin-bottom: 12px; background: var(--embabel-bg); }
+  .dw-obs h4 { margin: 0 0 8px; font-size: 0.98rem; }
+  .dw-obs dl { margin: 0; display: grid; gap: 7px; }
+  .dw-obs dt { font-size: 0.72rem; text-transform: uppercase; letter-spacing: 0.05em; color: var(--dw-ink-soft); }
+  .dw-obs dd { margin: 2px 0 0; font-size: 0.9rem; line-height: 1.5; }
+  .dw-obs .dw-notmean { color: var(--dw-ink-soft); }
+
+  table.dw-table { width: 100%; border-collapse: collapse; font-size: 0.88rem; }
+  table.dw-table th, table.dw-table td { text-align: left; padding: 8px 10px; border-bottom: 1px solid var(--dw-rule); vertical-align: top; }
+  table.dw-table th { font-size: 0.74rem; text-transform: uppercase; letter-spacing: 0.04em; color: var(--dw-ink-soft); font-weight: 600; }
+  table.dw-table tbody tr:last-child td { border-bottom: 0; }
+  .dw-scroll { overflow-x: auto; }
+
+  .dw-tabs { display: flex; gap: 6px; flex-wrap: wrap; margin-bottom: 14px; border-bottom: 1px solid var(--dw-rule); }
+  .dw-tab { padding: 8px 13px; cursor: pointer; background: none; border: 0; border-bottom: 2px solid transparent; color: var(--dw-ink-soft); font: inherit; font-size: 0.9rem; }
+  .dw-tab[aria-selected="true"] { color: var(--embabel-text); border-bottom-color: var(--embabel-accent); font-weight: 600; }
+
+  .dw-pill { display: inline-block; padding: 2px 8px; border-radius: 999px; font-size: 0.76rem; border: 1px solid var(--dw-rule); color: var(--dw-ink-soft); white-space: nowrap; }
+  .dw-note { font-size: 0.84rem; color: var(--dw-ink-soft); line-height: 1.5; margin: 10px 0 0; }
+  .dw-caution { border: 1px solid var(--embabel-warning); background: var(--embabel-warning-bg); color: var(--embabel-warning); padding: 10px 13px; border-radius: var(--embabel-radius-sm); font-size: 0.86rem; line-height: 1.5; margin-bottom: 14px; }
+  .dw-empty { color: var(--dw-ink-soft); font-size: 0.9rem; padding: 6px 0; }
+  a { color: var(--embabel-accent); }
+  .dw-hidden { display: none !important; }
+  .dw-actions { display: flex; gap: 8px; flex-wrap: wrap; margin-bottom: 12px; }
+  #deep-results { margin-top: 18px; }
+  #deep-results h3 { margin-top: 0; }
+  footer.dw-foot { margin-top: 26px; padding-top: 16px; border-top: 1px solid var(--dw-rule); font-size: 0.82rem; color: var(--dw-ink-soft); line-height: 1.6; }
+</style>
+</head>
+<body>
+<div class="dw-wrap">
+
+  <header class="dw-head">
+    <h1>Director Web</h1>
+    <p>Search a UK director, choose the right Companies House officer record, and read where that
+      record appears — with the official source behind every claim. This is a navigator over the
+      public register. It is not a background check and not an assessment of anyone's conduct.</p>
+  </header>
+
+  <div id="unavailable" class="dw-card dw-hidden">
+    <h2>This app needs the UK register realm</h2>
+    <p class="dw-sub" id="unavailable-detail"></p>
+  </div>
+
+  <section class="dw-card" id="search-card">
+    <h2>Find a director</h2>
+    <p class="dw-sub">Companies House can hold several officer records with the same name, including
+      separate records that may refer to the same person. Choose using the companies and details
+      shown — nothing is merged for you.</p>
+    <form class="dw-search" id="search-form">
+      <input type="search" id="q" name="q" placeholder="Director's name" aria-label="Director's name" autocomplete="off" required>
+      <button type="submit" class="embabel-button">Search</button>
+    </form>
+    <embabel-operation-state id="search-state"></embabel-operation-state>
+    <div id="candidates" class="dw-candidates"></div>
+  </section>
+
+  <section class="dw-card dw-hidden" id="passport-card">
+    <h2 id="passport-name">Officer record</h2>
+    <p class="dw-sub" id="passport-sub"></p>
+    <div id="passport-caution"></div>
+    <embabel-operation-state id="passport-state"></embabel-operation-state>
+    <div id="passport-tiles" class="dw-tiles"></div>
+    <p class="dw-note" id="passport-link"></p>
+  </section>
+
+  <section class="dw-card dw-hidden" id="observations-card">
+    <h2>What stands out?</h2>
+    <p class="dw-sub">Each observation says what the register records, why it might prompt a
+      question, and — just as importantly — what it does not establish.</p>
+    <embabel-operation-state id="observations-state"></embabel-operation-state>
+    <div id="observations"></div>
+    <div class="dw-actions" id="deep-actions">
+      <button type="button" class="embabel-button embabel-button--quiet" id="btn-formation">Check for formation clusters</button>
+      <button type="button" class="embabel-button embabel-button--quiet" id="btn-dissolution">Check how dissolved companies were closed</button>
+    </div>
+    <p class="dw-note">Both checks read one company at a time from the register, so they take longer
+      than the summary above.</p>
+    <embabel-operation-state id="deep-state"></embabel-operation-state>
+    <div id="deep-results"></div>
+  </section>
+
+  <section class="dw-card dw-hidden" id="detail-card">
+    <div class="dw-tabs" role="tablist">
+      <button class="dw-tab" role="tab" id="tab-appointments" aria-selected="true" aria-controls="panel-appointments">Appointments</button>
+      <button class="dw-tab" role="tab" id="tab-statuses" aria-selected="false" aria-controls="panel-statuses">Companies by status</button>
+      <button class="dw-tab" role="tab" id="tab-timeline" aria-selected="false" aria-controls="panel-timeline">Timeline</button>
+    </div>
+    <div id="panel-appointments" role="tabpanel" aria-labelledby="tab-appointments">
+      <embabel-operation-state id="appointments-state"></embabel-operation-state>
+      <div class="dw-scroll" id="appointments"></div>
+    </div>
+    <div id="panel-statuses" role="tabpanel" aria-labelledby="tab-statuses" class="dw-hidden">
+      <embabel-operation-state id="statuses-state"></embabel-operation-state>
+      <div class="dw-scroll" id="statuses"></div>
+    </div>
+    <div id="panel-timeline" role="tabpanel" aria-labelledby="tab-timeline" class="dw-hidden">
+      <embabel-operation-state id="timeline-state"></embabel-operation-state>
+      <div class="dw-scroll" id="timeline"></div>
+    </div>
+  </section>
+
+  <footer class="dw-foot">
+    <p><strong>How to read this.</strong> A recorded appointment establishes that someone held a
+      role for a period. It does not establish share ownership, involvement throughout that period,
+      or responsibility for what the company did. Dissolution is a legal company status, not a
+      finding of misconduct. Holding many appointments is ordinary for accountants, formation
+      agents and group directors.</p>
+    <p><strong>Dates.</strong> Appointments recorded before 1992 carry only an upper bound — the
+      register says a person was appointed <em>before</em> a date, not on one. Those are shown as
+      &ldquo;before&rdquo; and are never treated as exact.</p>
+    <p><strong>Thresholds.</strong> The groupings below use published, adjustable windows: 30 days
+      for resignations, 120 days for incorporations, and a minimum of three companies in a group.</p>
+  </footer>
+</div>
+
+<div id="embabel-badge" style="position:fixed;bottom:0;left:0;right:0;text-align:center;padding:6px 0;background:rgba(10,10,15,0.9);border-top:1px solid rgba(99,192,245,0.2);font-size:0.75rem;color:#6b7280;z-index:9999;pointer-events:none;">
+  Created with <a href="https://embabel.com" target="_blank" rel="noopener noreferrer" style="color:#63c0f5;text-decoration:none;pointer-events:auto;">Embabel Me</a>
+</div>
+
+<script>
+(function () {
+  'use strict';
+
+  var CH = 'https://find-and-update.company-information.service.gov.uk';
+
+  // If the runtime's theme.css did not load, its tokens are undefined and the page would render
+  // as unstyled text. Flag that so the standalone token block above takes over.
+  if (!getComputedStyle(document.documentElement).getPropertyValue('--embabel-surface').trim()) {
+    document.documentElement.classList.add('no-runtime');
+  }
+
+  function escapeHtml(s) {
+    return String(s == null ? '' : s)
+      .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+      .replace(/"/g, '&quot;').replace(/'/g, '&#39;');
+  }
+  function $(id) { return document.getElementById(id); }
+  function show(el, on) { el.classList.toggle('dw-hidden', !on); }
+  function num(v) { return typeof v === 'number' ? v.toLocaleString('en-GB') : escapeHtml(v); }
+
+  /** Rows for a view come back as a bare array under the envelope's `data`. */
+  function rowsOf(envelope) {
+    var d = envelope && envelope.data;
+    return Array.isArray(d) ? d : [];
+  }
+
+  /** A warning means a source failed or truncated — few rows then mean "incomplete", not "none". */
+  function warningsOf(envelope) {
+    var w = envelope && envelope.warnings;
+    return Array.isArray(w) ? w : [];
+  }
+  function warningHtml(envelope) {
+    var w = warningsOf(envelope);
+    if (!w.length) return '';
+    var lines = w.map(function (x) { return escapeHtml(x && (x.message || x.detail || x.code) || 'The register reported a problem.'); });
+    return '<div class="dw-caution"><strong>Partial answer.</strong> The register did not return' +
+      ' everything asked of it, so figures here are a floor rather than a total. ' +
+      lines.join(' ') + '</div>';
+  }
+
+  function link(href, text) {
+    return '<a href="' + escapeHtml(href) + '" target="_blank" rel="noopener noreferrer">' + escapeHtml(text) + '</a>';
+  }
+  function companyLink(number, name) {
+    if (!number) return escapeHtml(name || '');
+    return link(CH + '/company/' + encodeURIComponent(number), name || number);
+  }
+
+  /** Each panel gets its OWN runner: one runner cancels its own previous run, so sharing a
+      single runner across concurrently loading panels would make them cancel each other. */
+  function runnerFor(stateId) {
+    return embabel.createRunner({ state: $(stateId) });
+  }
+  var runners = {
+    search: runnerFor('search-state'),
+    passport: runnerFor('passport-state'),
+    observations: runnerFor('observations-state'),
+    deep: runnerFor('deep-state'),
+    appointments: runnerFor('appointments-state'),
+    statuses: runnerFor('statuses-state'),
+    timeline: runnerFor('timeline-state')
+  };
+
+  var selected = null;   // { officerId, name }
+
+  // ── search ────────────────────────────────────────────────────────────────────────────────
+
+  $('search-form').addEventListener('submit', function (e) {
+    e.preventDefault();
+    var q = $('q').value.trim();
+    if (q) search(q);
+  });
+
+  async function search(q) {
+    $('candidates').innerHTML = '';
+    show($('passport-card'), false);
+    show($('observations-card'), false);
+    show($('detail-card'), false);
+    selected = null;
+    try {
+      var env = await runners.search.view('OfficerSearchCandidates', { query: q, minAppointments: 0 }, {
+        expectation: 'Asking Companies House for officers matching that name.'
+      });
+      if (!env) return;                       // superseded by a newer search
+      renderCandidates(rowsOf(env), q, env);
+    } catch (err) {
+      $('candidates').innerHTML = '<p class="dw-empty">The register did not answer that search: ' +
+        escapeHtml(err && err.message || String(err)) + '</p>';
+    }
+  }
+
+  function renderCandidates(rows, q, env) {
+    if (!rows.length) {
+      $('candidates').innerHTML = warningHtml(env) +
+        '<p class="dw-empty">No officer records matched &ldquo;' + escapeHtml(q) +
+        '&rdquo;. That is the register’s answer, not a failure — try a different spelling,' +
+        ' or a fuller name.</p>';
+      return;
+    }
+    var html = warningHtml(env) + rows.map(function (r) {
+      var dob = (r.birthMonth && r.birthYear)
+        ? 'Born ' + escapeHtml(String(r.birthMonth).padStart(2, '0')) + '/' + escapeHtml(r.birthYear)
+        : 'Birth date not published for this record';
+      return '<button type="button" class="dw-candidate" data-officer="' + escapeHtml(r.officerId) +
+        '" data-name="' + escapeHtml(r.name) + '">' +
+        '<span class="dw-cname">' + escapeHtml(r.name) + '</span>' +
+        '<span class="dw-cmeta">' + num(r.appointmentCount) + ' appointment' +
+        (r.appointmentCount === 1 ? '' : 's') + ' &middot; ' + dob + '</span>' +
+        (r.addressSnippet ? '<span class="dw-cmeta">' + escapeHtml(r.addressSnippet) + '</span>' : '') +
+        '</button>';
+    }).join('');
+    $('candidates').innerHTML = html;
+    Array.prototype.forEach.call($('candidates').querySelectorAll('.dw-candidate'), function (btn) {
+      btn.addEventListener('click', function () {
+        selectOfficer(btn.getAttribute('data-officer'), btn.getAttribute('data-name'));
+      });
+    });
+  }
+
+  // ── passport ──────────────────────────────────────────────────────────────────────────────
+
+  function selectOfficer(officerId, name) {
+    selected = { officerId: officerId, name: name };
+    $('passport-name').textContent = name;
+    $('passport-sub').textContent =
+      'This describes one Companies House officer record — itself the register’s own grouping ' +
+      'of underlying entries, not a biography of a person.';
+    $('passport-link').innerHTML = 'Official record: ' +
+      link(CH + '/officers/' + encodeURIComponent(officerId) + '/appointments', 'Companies House appointments');
+    $('passport-caution').innerHTML = '';
+    $('deep-results').innerHTML = '';
+    show($('passport-card'), true);
+    show($('observations-card'), true);
+    show($('detail-card'), true);
+
+    // These read the SAME cached appointments fetch, so they are cheap and load together.
+    loadPassport(officerId);
+    loadObservations(officerId);
+    loadAppointments(officerId);
+    loadStatuses(officerId);
+    loadTimeline(officerId);
+  }
+
+  async function loadPassport(officerId) {
+    $('passport-tiles').innerHTML = '';
+    try {
+      var env = await runners.passport.view('OfficerPassport', { officerId: officerId }, {
+        expectation: 'Reading every appointment recorded for this officer.'
+      });
+      if (!env) return;
+      var rows = rowsOf(env);
+      if (!rows.length) {
+        $('passport-tiles').innerHTML = '<p class="dw-empty">The register lists no appointments for this record.</p>';
+        return;
+      }
+      var p = rows[0];
+      var caution = warningHtml(env);
+      if (p.possiblyTruncated) {
+        caution += '<div class="dw-caution"><strong>These counts are a floor.</strong> Companies ' +
+          'House returns at most 50 appointments in one read, and this record reached that limit, ' +
+          'so it holds more than is shown here.</div>';
+      }
+      $('passport-caution').innerHTML = caution;
+
+      var span = (p.earliestAppointedOn && p.latestAppointedOn)
+        ? escapeHtml(p.earliestAppointedOn) + ' – ' + escapeHtml(p.latestAppointedOn)
+        : 'Not dated';
+      var tiles = [
+        { n: num(p.distinctCompanies), l: 'Companies' },
+        { n: num(p.currentAppointments), l: 'Current roles' },
+        { n: num(p.formerAppointments), l: 'Former roles' },
+        { n: span, l: 'Recorded span', wide: true }
+      ];
+      if (p.boundedStartDates) {
+        tiles.push({ n: num(p.boundedStartDates), l: 'Dates given only as "before"' });
+      }
+      $('passport-tiles').innerHTML = tiles.map(function (t) {
+        return '<div class="dw-tile"><div class="dw-n"' +
+          (t.wide ? ' style="font-size:1.05rem"' : '') + '>' + t.n + '</div>' +
+          '<div class="dw-l">' + escapeHtml(t.l) + '</div></div>';
+      }).join('');
+
+      var roles = Array.isArray(p.recordedRoles) ? p.recordedRoles : [];
+      if (roles.length) {
+        $('passport-tiles').insertAdjacentHTML('afterend',
+          '<p class="dw-note" id="roles-note">Roles recorded: ' +
+          roles.map(function (r) { return '<span class="dw-pill">' + escapeHtml(r) + '</span>'; }).join(' ') +
+          '</p>');
+      }
+    } catch (err) {
+      $('passport-tiles').innerHTML = '<p class="dw-empty">The register did not answer: ' +
+        escapeHtml(err && err.message || String(err)) + '</p>';
+    }
+  }
+
+  // ── observations ──────────────────────────────────────────────────────────────────────────
+
+  function observation(headline, record, why, notMean, evidenceHtml) {
+    return '<div class="dw-obs"><h4>' + headline + '</h4><dl>' +
+      '<dt>What the register says</dt><dd>' + record + '</dd>' +
+      '<dt>Why someone might ask</dt><dd>' + why + '</dd>' +
+      '<dt>What this does not establish</dt><dd class="dw-notmean">' + notMean + '</dd>' +
+      (evidenceHtml ? '<dt>The records behind it</dt><dd>' + evidenceHtml + '</dd>' : '') +
+      '</dl></div>';
+  }
+
+  function companyListHtml(names, numbers) {
+    var ns = Array.isArray(names) ? names : [];
+    var ids = Array.isArray(numbers) ? numbers : [];
+    return ns.map(function (n, i) { return companyLink(ids[i], n); }).join(', ');
+  }
+
+  async function loadObservations(officerId) {
+    $('observations').innerHTML = '';
+    try {
+      // Both read the one cached appointments fetch, so run them together rather than in sequence.
+      var results = await Promise.all([
+        runners.observations.view('ManyAppointments', { officerId: officerId }, {
+          expectation: 'Summarising the appointments already read.'
+        }),
+        embabel.views.invoke('SynchronousRoleChanges', { officerId: officerId, windowDays: 30, minInGroup: 3 })
+      ]);
+      var manyEnv = results[0], syncEnv = results[1];
+      if (!manyEnv) return;                    // superseded
+
+      var html = warningHtml(manyEnv);
+      var many = rowsOf(manyEnv)[0];
+      if (many) {
+        html += observation(
+          'This record appears in ' + num(many.companies) + ' compan' + (many.companies === 1 ? 'y' : 'ies'),
+          'Companies House lists ' + num(many.currentAppointments) + ' current and ' +
+            num(many.formerAppointments) + ' former appointments' +
+            (many.firstAppointedOn ? ' between ' + escapeHtml(many.firstAppointedOn) + ' and ' +
+              escapeHtml(many.lastAppointedOn || many.firstAppointedOn) : '') + '.' +
+            (many.countIsAFloor ? ' The read hit the register’s 50-appointment limit, so this is a floor.' : ''),
+          'It shows whether the companies share a business purpose, a professional service or a group structure.',
+          'Holding many appointments is common for accountants, company-formation agents and group ' +
+            'directors, and is not evidence of wrongdoing.',
+          'Listed under Appointments below.');
+      }
+
+      var groups = rowsOf(syncEnv);
+      if (groups.length) {
+        var g = groups[0];
+        html += observation(
+          num(g.resignationsInWindow) + ' recorded directorships ended within 30 days',
+          'Between ' + escapeHtml(g.earliestInWindow) + ' and ' + escapeHtml(g.latestInWindow) + '.',
+          'The timeline makes it possible to check whether those companies were restructured, sold or closing.',
+          'The register states no common reason, and closeness in time establishes none.',
+          companyListHtml(g.companies, g.companyNumbers));
+      }
+
+      if (!html.trim()) {
+        html = '<p class="dw-empty">Nothing in this record meets the thresholds above. That is a ' +
+          'result, not a gap — most officer records show no clustering at all.</p>';
+      }
+      $('observations').innerHTML = html;
+    } catch (err) {
+      $('observations').innerHTML = '<p class="dw-empty">The register did not answer: ' +
+        escapeHtml(err && err.message || String(err)) + '</p>';
+    }
+  }
+
+  // Expensive: one register call per company. Explicit, never automatic.
+  $('btn-formation').addEventListener('click', function () {
+    if (selected) loadFormationBurst(selected.officerId);
+  });
+  $('btn-dissolution').addEventListener('click', function () {
+    if (selected) loadDissolutionManner(selected.officerId);
+  });
+
+  async function loadFormationBurst(officerId) {
+    $('deep-results').innerHTML = '';
+    try {
+      var env = await runners.deep.view('FormationBurst',
+        { officerId: officerId, windowDays: 120, minInGroup: 3 },
+        { expectation: 'Reading each company’s incorporation date, one company at a time.' });
+      if (!env) return;
+      var rows = rowsOf(env);
+      if (!rows.length) {
+        $('deep-results').innerHTML = warningHtml(env) +
+          '<p class="dw-empty">No group of three or more of these companies was incorporated within ' +
+          '120 days of each other.</p>';
+        return;
+      }
+      var g = rows[0];
+      $('deep-results').innerHTML = warningHtml(env) + observation(
+        num(g.companiesIncorporatedInWindow) + ' connected companies were incorporated within 120 days',
+        'Between ' + escapeHtml(g.earliestInWindow) + ' and ' + escapeHtml(g.latestInWindow) + '.',
+        'It is a useful cluster for exploring shared directors, addresses or business activity.',
+        'Companies in a legitimate group, fund structure or property portfolio are very often formed ' +
+          'together; timing alone shows nothing about purpose.',
+        companyListHtml(g.companies, g.companyNumbers));
+    } catch (err) {
+      $('deep-results').innerHTML = '<p class="dw-empty">The register did not answer: ' +
+        escapeHtml(err && err.message || String(err)) + '</p>';
+    }
+  }
+
+  async function loadDissolutionManner(officerId) {
+    $('deep-results').innerHTML = '';
+    try {
+      var env = await runners.deep.view('OfficerDissolutionManner', { officerId: officerId }, {
+        expectation: 'Reading the gazette filings of each dissolved company, one at a time.'
+      });
+      if (!env) return;
+      var rows = rowsOf(env);
+      if (!rows.length) {
+        $('deep-results').innerHTML = warningHtml(env) +
+          '<p class="dw-empty">None of this record’s companies is recorded as dissolved.</p>';
+        return;
+      }
+      var body = rows.map(function (r) {
+        return '<tr><td>' + companyLink(r.companyNumber, r.companyName) + '</td>' +
+          '<td>' + escapeHtml(r.mannerOfDissolution) + '</td>' +
+          '<td>' + escapeHtml(r.latestFilingDate || '') + '</td>' +
+          '<td>' + link(r.filingHistoryUrl, 'Filings') + '</td></tr>';
+      }).join('');
+      $('deep-results').innerHTML = warningHtml(env) +
+        '<h3>How each dissolved company was closed</h3>' +
+        '<p class="dw-sub">Company status says only &ldquo;dissolved&rdquo;. Whether a strike-off was ' +
+        'voluntary or compulsory appears only in the gazette filings, which is what this reads. ' +
+        'Voluntary strike-off is a normal, lawful way to close a company that is no longer needed.</p>' +
+        '<div class="dw-scroll"><table class="dw-table"><thead><tr><th>Company</th>' +
+        '<th>Manner of dissolution</th><th>Latest filing</th><th>Source</th></tr></thead>' +
+        '<tbody>' + body + '</tbody></table></div>';
+    } catch (err) {
+      $('deep-results').innerHTML = '<p class="dw-empty">The register did not answer: ' +
+        escapeHtml(err && err.message || String(err)) + '</p>';
+    }
+  }
+
+  // ── detail tabs ───────────────────────────────────────────────────────────────────────────
+
+  var TABS = [
+    { tab: 'tab-appointments', panel: 'panel-appointments' },
+    { tab: 'tab-statuses', panel: 'panel-statuses' },
+    { tab: 'tab-timeline', panel: 'panel-timeline' }
+  ];
+  TABS.forEach(function (t) {
+    $(t.tab).addEventListener('click', function () {
+      TABS.forEach(function (o) {
+        var on = o.tab === t.tab;
+        $(o.tab).setAttribute('aria-selected', on ? 'true' : 'false');
+        show($(o.panel), on);
+      });
+    });
+  });
+
+  async function loadAppointments(officerId) {
+    $('appointments').innerHTML = '';
+    try {
+      var env = await runners.appointments.view('OfficerAppointments',
+        { officerId: officerId, status: 'all' },
+        { expectation: 'Listing every appointment on this record.' });
+      if (!env) return;
+      var rows = rowsOf(env);
+      if (!rows.length) {
+        $('appointments').innerHTML = '<p class="dw-empty">The register lists no appointments for this record.</p>';
+        return;
+      }
+      var body = rows.map(function (r) {
+        var start = r.startDateBasis === 'exact' ? escapeHtml(r.appointedOn)
+          : r.startDateBasis === 'before' ? 'before ' + escapeHtml(r.appointedBefore)
+          : 'not recorded';
+        return '<tr><td>' + companyLink(r.companyNumber, r.companyName) +
+          '<div class="dw-cmeta">' + escapeHtml(r.companyNumber) + '</div></td>' +
+          '<td>' + escapeHtml(r.officerRole) + '</td>' +
+          '<td>' + start + '</td>' +
+          '<td>' + (r.resignedOn ? escapeHtml(r.resignedOn) : '<span class="dw-pill">still recorded</span>') + '</td>' +
+          '<td>' + escapeHtml(r.companyStatus) + '</td></tr>';
+      }).join('');
+      $('appointments').innerHTML = warningHtml(env) +
+        '<table class="dw-table"><thead><tr><th>Company</th><th>Role</th><th>Appointed</th>' +
+        '<th>Resigned</th><th>Company status</th></tr></thead><tbody>' + body + '</tbody></table>';
+    } catch (err) {
+      $('appointments').innerHTML = '<p class="dw-empty">The register did not answer: ' +
+        escapeHtml(err && err.message || String(err)) + '</p>';
+    }
+  }
+
+  async function loadStatuses(officerId) {
+    $('statuses').innerHTML = '';
+    try {
+      var env = await runners.statuses.view('OfficerCompaniesByStatus', { officerId: officerId }, {
+        expectation: 'Grouping the companies by the register’s own status wording.'
+      });
+      if (!env) return;
+      var rows = rowsOf(env);
+      if (!rows.length) {
+        $('statuses').innerHTML = '<p class="dw-empty">No companies are recorded against this officer.</p>';
+        return;
+      }
+      var body = rows.map(function (r) {
+        return '<tr><td><span class="dw-pill">' + escapeHtml(r.status) + '</span></td>' +
+          '<td>' + num(r.companies) + '</td>' +
+          '<td>' + companyListHtml(r.companyNames, r.companyNumbers) + '</td></tr>';
+      }).join('');
+      $('statuses').innerHTML = warningHtml(env) +
+        '<p class="dw-sub">Status is shown in the register’s exact wording. Note that the status ' +
+        'field has no strike-off value at all — use the dissolution check above to see how a ' +
+        'dissolved company was actually closed.</p>' +
+        '<table class="dw-table"><thead><tr><th>Status</th><th>Companies</th><th>Which</th></tr></thead>' +
+        '<tbody>' + body + '</tbody></table>';
+    } catch (err) {
+      $('statuses').innerHTML = '<p class="dw-empty">The register did not answer: ' +
+        escapeHtml(err && err.message || String(err)) + '</p>';
+    }
+  }
+
+  async function loadTimeline(officerId) {
+    $('timeline').innerHTML = '';
+    try {
+      var env = await runners.timeline.view('OfficerTimeline',
+        { officerId: officerId, eventType: 'all' },
+        { expectation: 'Ordering appointments and resignations into one sequence.' });
+      if (!env) return;
+      var rows = rowsOf(env);
+      if (!rows.length) {
+        $('timeline').innerHTML = '<p class="dw-empty">The register holds no dated events for this record.</p>';
+        return;
+      }
+      var body = rows.map(function (r) {
+        var when = escapeHtml(r.eventDate) + (r.dateBasis === 'before' ? ' <span class="dw-pill">before</span>' : '');
+        return '<tr><td>' + when + '</td>' +
+          '<td>' + escapeHtml(r.eventType) + '</td>' +
+          '<td>' + companyLink(r.companyNumber, r.companyName) + '</td>' +
+          '<td>' + escapeHtml(r.officerRole) + '</td></tr>';
+      }).join('');
+      $('timeline').innerHTML = warningHtml(env) +
+        '<p class="dw-sub">Events sharing a date are shown together but are not thereby related — ' +
+        'the register states no common reason.</p>' +
+        '<table class="dw-table"><thead><tr><th>Date</th><th>Event</th><th>Company</th><th>Role</th>' +
+        '</tr></thead><tbody>' + body + '</tbody></table>';
+    } catch (err) {
+      $('timeline').innerHTML = '<p class="dw-empty">The register did not answer: ' +
+        escapeHtml(err && err.message || String(err)) + '</p>';
+    }
+  }
+
+  // ── capability preflight ──────────────────────────────────────────────────────────────────
+
+  embabel.manifest.ready.then(function (result) {
+    if (result && result.ok === false) {
+      var missing = result.missing || {};
+      var parts = [];
+      if (missing.realms && missing.realms.length) parts.push('realm ' + missing.realms.join(', '));
+      if (missing.views && missing.views.length) parts.push('views ' + missing.views.join(', '));
+      $('unavailable-detail').textContent =
+        'This world is missing ' + (parts.join('; ') || 'a required capability') +
+        '. Install the gov-uk realm to use Director Web.';
+      show($('unavailable'), true);
+      show($('search-card'), false);
+    }
+  }).catch(function () { /* preflight is advisory; the app still runs and surfaces call errors. */ });
+})();
+</script>
+</body>
+</html>
