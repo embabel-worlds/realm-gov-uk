@@ -8,7 +8,7 @@
 <link rel="stylesheet" href="/api/v1/apps-runtime/v1/theme.css">
 <script src="/api/v1/apps-runtime/v1/embabel.js"></script>
 <script type="application/embabel-app+json">
-{"version":1,"name":"director-web","requires":{"lenses":[],"views":["OfficerSearchCandidates","OfficerPassport","OfficerAppointments","OfficerCompaniesByStatus","OfficerTimeline","ManyAppointments","SynchronousRoleChanges","FormationBurst","OfficerDissolutionManner"],"realms":["gov-uk"],"namespaces":[]}}
+{"version":1,"name":"director-web","requires":{"lenses":[],"views":["OfficerSearchCandidates","OfficerPassport","OfficerAppointments","OfficerCompaniesByStatus","OfficerTimeline","PossibleSamePersonRecords","CoDirectors","ManyAppointments","SynchronousRoleChanges","FormationBurst","OfficerDissolutionManner"],"realms":["gov-uk"],"namespaces":[]}}
 </script>
 <style>
   /* Rides the v1 theme tokens and recolours only the accent pair, so shared components stay
@@ -151,7 +151,21 @@
       <button type="submit" class="embabel-button">Search</button>
     </form>
     <embabel-operation-state id="search-state"></embabel-operation-state>
+    <embabel-operation-state id="duplicates-state"></embabel-operation-state>
+    <div id="duplicates"></div>
     <div id="candidates" class="dw-candidates"></div>
+    <div id="partial-wrap" class="dw-hidden">
+      <p class="dw-note">
+        <button type="button" class="embabel-button embabel-button--quiet" id="btn-partial"></button>
+      </p>
+      <div id="partial" class="dw-candidates dw-hidden"></div>
+    </div>
+    <div id="corporate-wrap" class="dw-hidden">
+      <p class="dw-note">
+        <button type="button" class="embabel-button embabel-button--quiet" id="btn-corporate"></button>
+      </p>
+      <div id="corporate" class="dw-candidates dw-hidden"></div>
+    </div>
   </section>
 
   <section class="dw-card dw-hidden" id="passport-card">
@@ -172,11 +186,14 @@
     <div class="dw-actions" id="deep-actions">
       <button type="button" class="embabel-button embabel-button--quiet" id="btn-formation">Check for formation clusters</button>
       <button type="button" class="embabel-button embabel-button--quiet" id="btn-dissolution">Check how dissolved companies were closed</button>
+      <button type="button" class="embabel-button embabel-button--quiet" id="btn-codirectors">Find who they sit on boards with</button>
     </div>
     <p class="dw-note">Both checks read one company at a time from the register, so they take longer
       than the summary above.</p>
     <embabel-operation-state id="deep-state"></embabel-operation-state>
     <div id="deep-results"></div>
+    <embabel-operation-state id="codirectors-state"></embabel-operation-state>
+    <div id="codirectors"></div>
   </section>
 
   <section class="dw-card dw-hidden" id="detail-card">
@@ -276,6 +293,8 @@
     passport: runnerFor('passport-state'),
     observations: runnerFor('observations-state'),
     deep: runnerFor('deep-state'),
+    duplicates: runnerFor('duplicates-state'),
+    codirectors: runnerFor('codirectors-state'),
     appointments: runnerFor('appointments-state'),
     statuses: runnerFor('statuses-state'),
     timeline: runnerFor('timeline-state')
@@ -293,6 +312,7 @@
 
   async function search(q) {
     $('candidates').innerHTML = '';
+    $('duplicates').innerHTML = '';
     show($('passport-card'), false);
     show($('observations-card'), false);
     show($('detail-card'), false);
@@ -303,13 +323,40 @@
       });
       if (!env) return;                       // superseded by a newer search
       renderCandidates(rowsOf(env), q, env);
+      loadPossibleDuplicates(q);
     } catch (err) {
       $('candidates').innerHTML = '<p class="dw-empty">The register did not answer that search: ' +
         escapeHtml(err && err.message || String(err)) + '</p>';
     }
   }
 
+  function candidateCard(r) {
+    var dob = (r.birthMonth && r.birthYear)
+      ? 'Born ' + escapeHtml(String(r.birthMonth).padStart(2, '0')) + '/' + escapeHtml(r.birthYear)
+      : (r.isCorporateOfficer ? 'A company, not a person' : 'Birth date not published for this record');
+    return '<button type="button" class="dw-candidate" data-officer="' + escapeHtml(r.officerId) +
+      '" data-name="' + escapeHtml(r.name) + '">' +
+      '<span class="dw-cname">' + escapeHtml(r.name) + '</span>' +
+      '<span class="dw-cmeta">' + num(r.appointmentCount) + ' appointment' +
+      (r.appointmentCount === 1 ? '' : 's') + ' &middot; ' + dob + '</span>' +
+      (r.addressSnippet ? '<span class="dw-cmeta">' + escapeHtml(r.addressSnippet) + '</span>' : '') +
+      '</button>';
+  }
+
+  function wireCandidateClicks(container) {
+    Array.prototype.forEach.call(container.querySelectorAll('.dw-candidate'), function (btn) {
+      btn.addEventListener('click', function () {
+        selectOfficer(btn.getAttribute('data-officer'), btn.getAttribute('data-name'));
+      });
+    });
+  }
+
   function renderCandidates(rows, q, env) {
+    show($('partial-wrap'), false);
+    show($('corporate-wrap'), false);
+    show($('partial'), false);
+    show($('corporate'), false);
+
     if (!rows.length) {
       $('candidates').innerHTML = warningHtml(env) +
         '<p class="dw-empty">No officer records matched &ldquo;' + escapeHtml(q) +
@@ -317,24 +364,85 @@
         ' or a fuller name.</p>';
       return;
     }
-    var html = warningHtml(env) + rows.map(function (r) {
-      var dob = (r.birthMonth && r.birthYear)
-        ? 'Born ' + escapeHtml(String(r.birthMonth).padStart(2, '0')) + '/' + escapeHtml(r.birthYear)
-        : 'Birth date not published for this record';
-      return '<button type="button" class="dw-candidate" data-officer="' + escapeHtml(r.officerId) +
-        '" data-name="' + escapeHtml(r.name) + '">' +
-        '<span class="dw-cname">' + escapeHtml(r.name) + '</span>' +
-        '<span class="dw-cmeta">' + num(r.appointmentCount) + ' appointment' +
-        (r.appointmentCount === 1 ? '' : 's') + ' &middot; ' + dob + '</span>' +
-        (r.addressSnippet ? '<span class="dw-cmeta">' + escapeHtml(r.addressSnippet) + '</span>' : '') +
-        '</button>';
-    }).join('');
-    $('candidates').innerHTML = html;
-    Array.prototype.forEach.call($('candidates').querySelectorAll('.dw-candidate'), function (btn) {
-      btn.addEventListener('click', function () {
-        selectOfficer(btn.getAttribute('data-officer'), btn.getAttribute('data-name'));
-      });
-    });
+
+    // The register's officer search matches ANY word of the query and includes CORPORATE officers
+    // — companies acting as a director elsewhere. Both are legitimate register contents, and both
+    // bury the person being looked for, so they are separated rather than silently dropped.
+    var people = rows.filter(function (r) { return !r.isCorporateOfficer; });
+    var companies = rows.filter(function (r) { return r.isCorporateOfficer; });
+    var wanted = rows.length ? rows[0].queryTokenCount : 0;
+    var full = people.filter(function (r) { return r.matchedNameTokens >= wanted; });
+    var partial = people.filter(function (r) { return r.matchedNameTokens < wanted; });
+    var primary = full.length ? full : people;
+    if (!full.length) partial = [];
+
+    $('candidates').innerHTML = warningHtml(env) +
+      (primary.length ? primary.map(candidateCard).join('')
+        : '<p class="dw-empty">No person matched that name — only companies did. They are listed below.</p>');
+    wireCandidateClicks($('candidates'));
+
+    if (partial.length) {
+      $('btn-partial').textContent = 'Show ' + partial.length + ' record' + (partial.length === 1 ? '' : 's') +
+        ' matching only part of that name';
+      $('partial').innerHTML = partial.map(candidateCard).join('');
+      wireCandidateClicks($('partial'));
+      show($('partial-wrap'), true);
+    }
+    if (companies.length) {
+      $('btn-corporate').textContent = 'Show ' + companies.length + ' compan' +
+        (companies.length === 1 ? 'y' : 'ies') + ' recorded as an officer elsewhere';
+      $('corporate').innerHTML = companies.map(candidateCard).join('');
+      wireCandidateClicks($('corporate'));
+      show($('corporate-wrap'), true);
+    }
+  }
+
+  $('btn-partial').addEventListener('click', function () {
+    var on = $('partial').classList.contains('dw-hidden');
+    show($('partial'), on);
+  });
+  $('btn-corporate').addEventListener('click', function () {
+    var on = $('corporate').classList.contains('dw-hidden');
+    show($('corporate'), on);
+  });
+
+  // Records that MIGHT be one person. Shown with the evidence, never merged, never summed.
+  async function loadPossibleDuplicates(q) {
+    $('duplicates').innerHTML = '';
+    try {
+      var env = await runners.duplicates.view('PossibleSamePersonRecords', { query: q });
+      if (!env) return;
+      var groups = rowsOf(env);
+      if (!groups.length) return;
+      $('duplicates').innerHTML = groups.map(function (g) {
+        var rows = g.names.map(function (n, i) {
+          return '<tr><td>' + escapeHtml(n) + '</td>' +
+            '<td>' + num(g.appointmentsPerRecord[i]) + '</td>' +
+            '<td>' + escapeHtml(g.addressSnippets[i] || '') + '</td>' +
+            '<td>' + link('https://find-and-update.company-information.service.gov.uk/officers/'
+              + g.officerIds[i] + '/appointments', 'Official record') + '</td></tr>';
+        }).join('');
+        return '<div class="dw-obs"><h4>' + num(g.recordCount) +
+          ' records here may be the same person</h4><dl>' +
+          '<dt>What the register says</dt><dd>They share a recorded birth date of ' +
+          escapeHtml(String(g.birthMonth).padStart(2, '0')) + '/' + escapeHtml(g.birthYear) +
+          ' and the name word' + (g.sharedNameWords.length === 1 ? '' : 's') + ' ' +
+          g.sharedNameWords.map(function (w) { return '<span class="dw-pill">' + escapeHtml(w) + '</span>'; }).join(' ') +
+          ', but Companies House holds them under separate officer identifiers and has not linked them.</dd>' +
+          '<dt>Why someone might ask</dt><dd>Choosing one record shows only that record’s companies. ' +
+          'If these are one person, each is part of a larger picture.</dd>' +
+          '<dt>What this does not establish</dt><dd class="dw-notmean">That they ARE one person. ' +
+          'Thousands of people share a birth month and year, and name spellings vary between ' +
+          'filings. Compare the official records and judge for yourself — this app will not merge ' +
+          'them, and never adds their appointment counts together.</dd>' +
+          '<dt>The records</dt><dd><div class="dw-scroll"><table class="dw-table"><thead><tr>' +
+          '<th>Name as recorded</th><th>Appointments</th><th>Address</th><th>Source</th></tr></thead>' +
+          '<tbody>' + rows + '</tbody></table></div></dd></dl></div>';
+      }).join('');
+    } catch (err) {
+      $('duplicates').innerHTML = '<p class="dw-empty">The register did not answer the ' +
+        'duplicate-record check: ' + escapeHtml(err && err.message || String(err)) + '</p>';
+    }
   }
 
   // ── passport ──────────────────────────────────────────────────────────────────────────────
@@ -349,6 +457,7 @@
       link(CH + '/officers/' + encodeURIComponent(officerId) + '/appointments', 'Companies House appointments');
     $('passport-caution').innerHTML = '';
     $('deep-results').innerHTML = '';
+    $('codirectors').innerHTML = '';
     show($('passport-card'), true);
     show($('observations-card'), true);
     show($('detail-card'), true);
@@ -488,6 +597,50 @@
   $('btn-dissolution').addEventListener('click', function () {
     if (selected) loadDissolutionManner(selected.officerId);
   });
+  $('btn-codirectors').addEventListener('click', function () {
+    if (selected) loadCoDirectors(selected.officerId);
+  });
+
+  // One register call per company, so this is on request only.
+  async function loadCoDirectors(officerId) {
+    $('codirectors').innerHTML = '';
+    try {
+      var env = await runners.codirectors.view('CoDirectors',
+        { officerId: officerId, minSharedCompanies: 1 },
+        { expectation: 'Reading the officer list of each company, one company at a time.' });
+      if (!env) return;
+      var rows = rowsOf(env);
+      if (!rows.length) {
+        $('codirectors').innerHTML = warningHtml(env) +
+          '<p class="dw-empty">The register lists no other officers on these companies.</p>';
+        return;
+      }
+      var body = rows.map(function (r) {
+        var where = r.companies.map(function (c, i) {
+          var mark = r.overlapPerCompany[i] === 'overlapped' ? ''
+            : r.overlapPerCompany[i] === 'did not overlap' ? ' <span class="dw-pill">not at the same time</span>'
+            : ' <span class="dw-pill">dates unclear</span>';
+          return companyLink(r.companyNumbers[i], c) + mark;
+        }).join('<br>');
+        return '<tr><td>' + link(r.officialUrl, r.name) + '</td>' +
+          '<td>' + num(r.sharedCompanyCount) + '</td>' +
+          '<td>' + num(r.companiesOverlapped) + '</td>' +
+          '<td>' + where + '</td></tr>';
+      }).join('');
+      $('codirectors').innerHTML = warningHtml(env) +
+        '<h3>Who they sit on boards with</h3>' +
+        '<p class="dw-sub">Sharing a company is a recorded fact; sharing it AT THE SAME TIME is a ' +
+        'different one, so each company says which. Where either appointment has no exact date — ' +
+        'every pre-1992 record — the register cannot answer and neither does this. Repeated ' +
+        'co-appointment is ordinary: partners, family firms and professional advisers all produce it.</p>' +
+        '<div class="dw-scroll"><table class="dw-table"><thead><tr><th>Officer</th>' +
+        '<th>Companies shared</th><th>Of those, overlapping</th><th>Which companies</th>' +
+        '</tr></thead><tbody>' + body + '</tbody></table></div>';
+    } catch (err) {
+      $('codirectors').innerHTML = '<p class="dw-empty">The register did not answer: ' +
+        escapeHtml(err && err.message || String(err)) + '</p>';
+    }
+  }
 
   async function loadFormationBurst(officerId) {
     $('deep-results').innerHTML = '';

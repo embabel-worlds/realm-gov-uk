@@ -27,6 +27,17 @@
     all. Nothing here may be merged, totalled, or carried forward as though a choice had been
     made. Appointment count and the companies behind it are usually what actually distinguishes
     two people with the same name.
+
+    Two things the register's own search does that a citizen would not expect, both surfaced here
+    as columns rather than silently filtered:
+
+    · It matches ANY word, not all of them — searching two names returns thousands of records
+      that carry only one of them. `matchedNameTokens` says how many of the words matched, so a
+      partial match can be ranked below a full one and labelled as partial.
+    · Its officer index contains CORPORATE OFFICERS — companies that act as a director or
+      secretary of another company — alongside people. They are not people, must never be counted
+      among a person's records, and the register distinguishes them by publishing no date of
+      birth. `isCorporateOfficer` carries that distinction.
   params:
     query:
       type: string
@@ -35,18 +46,73 @@
       type: int
       default: 0
       description: "Hide candidates with fewer appointments than this. 0 shows every candidate."
+  # matchedNameTokens is a PROJECTION, never a WHERE. A predicate comparing a fetched node's
+  # property to a parameter is pushed down to the producer as a FETCH filter — that is what once
+  # made OfficerAppointments return nothing. Ranking here, filtering in the caller, keeps the
+  # whole result set intact and the engine out of the loop.
   cypher: |
     MATCH (s:UkOfficerSearch {query: $query})-[:FOUND]->(c:UkOfficerCandidate)
     WHERE coalesce(c.appointmentCount, 0) >= $minAppointments
+    WITH c, [t IN split(toLower($query), ' ') WHERE size(t) >= 2] AS queryTokens
+    WITH c, queryTokens,
+         size([t IN queryTokens WHERE toLower(c.candidateName) CONTAINS t]) AS matchedNameTokens
     RETURN split(c.officerLink, '/')[2] AS officerId,
            c.candidateName                AS name,
            c.appointmentCount             AS appointmentCount,
            c.dateOfBirthMonth             AS birthMonth,
            c.dateOfBirthYear              AS birthYear,
+           c.dateOfBirthYear IS NULL      AS isCorporateOfficer,
+           matchedNameTokens,
+           size(queryTokens)              AS queryTokenCount,
            c.addressSnippet               AS addressSnippet,
            c.description                  AS registerDescription,
            'https://find-and-update.company-information.service.gov.uk' + c.officerLink AS officialUrl
-    ORDER BY appointmentCount DESC, name
+    ORDER BY matchedNameTokens DESC, isCorporateOfficer, appointmentCount DESC, name
+
+- name: PossibleSamePersonRecords
+  description: >-
+    Groups of candidate records from one search that MIGHT be the same person: they share a
+    recorded month and year of birth and at least one name word, but Companies House holds them
+    under SEPARATE officer identifiers and has not linked them.
+
+    This app cannot confirm they are one person, and deliberately does not try. It shows them
+    side by side with the evidence — the shared birth date, the words their names have in common,
+    and each record's own appointments — so a reader can compare the official records and decide.
+    A shared month and year of birth is weak on its own: thousands of people share one. Name
+    spelling varies between filings, and a longer or shorter form of the same name is common.
+    Counts are reported PER RECORD and are never added together, because adding them would assert
+    exactly the identity the register does not.
+  params:
+    query:
+      type: string
+      description: "The name that was searched for."
+  cypher: |
+    MATCH (s:UkOfficerSearch {query: $query})-[:FOUND]->(c:UkOfficerCandidate)
+    WHERE c.dateOfBirthYear IS NOT NULL
+    WITH c, [t IN split(toLower(c.candidateName), ' ') WHERE size(t) >= 3] AS nameTokens
+    WITH c.dateOfBirthYear AS birthYear, c.dateOfBirthMonth AS birthMonth,
+         collect({
+           officerId: split(c.officerLink, '/')[2],
+           name: c.candidateName,
+           appointments: c.appointmentCount,
+           addressSnippet: c.addressSnippet,
+           tokens: nameTokens
+         }) AS records
+    WHERE size(records) > 1
+    // Every record in the group must share a name word with the first, so two unrelated people
+    // who happen to share a birth month are not presented as possibly one person.
+    WITH birthYear, birthMonth, records,
+         reduce(shared = head(records).tokens, r IN tail(records) |
+                [t IN shared WHERE t IN r.tokens]) AS sharedNameWords
+    WHERE size(sharedNameWords) > 0
+    RETURN birthYear, birthMonth,
+           size(records)                          AS recordCount,
+           sharedNameWords,
+           [r IN records | r.name]                AS names,
+           [r IN records | r.officerId]           AS officerIds,
+           [r IN records | r.appointments]        AS appointmentsPerRecord,
+           [r IN records | r.addressSnippet]      AS addressSnippets
+    ORDER BY recordCount DESC, birthYear DESC
 
 - name: OfficerPassport
   description: >-

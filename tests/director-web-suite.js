@@ -23,13 +23,45 @@ function check(name, cond, detail) {
 
 // Envelopes exactly as the view invoke endpoint returns them: rows under `data`, plus `warnings`.
 const FIXTURES = {
+  // Mirrors the real shape a two-word name search returns: several PERSON records sharing a
+  // birth date with spelling variants (the register does not link them), plus corporate officers
+  // and one-word partial matches that the register's OR-matching drags in. Names are invented.
   OfficerSearchCandidates: [
     { officerId: 'OFFICER_A', name: 'AVERY, Dana Kim', appointmentCount: 26, birthMonth: 4, birthYear: 1968,
+      isCorporateOfficer: false, matchedNameTokens: 2, queryTokenCount: 2,
       addressSnippet: '11 Example Street, Sampleton', registerDescription: 'Total number of appointments 26',
       officialUrl: 'https://find-and-update.company-information.service.gov.uk/officers/OFFICER_A/appointments' },
-    { officerId: 'OFFICER_B', name: 'AVERY, Dana', appointmentCount: 1, birthMonth: null, birthYear: null,
-      addressSnippet: '2 Placeholder Road, Sampleton', registerDescription: 'Total number of appointments 1',
-      officialUrl: 'https://find-and-update.company-information.service.gov.uk/officers/OFFICER_B/appointments' }
+    { officerId: 'OFFICER_B', name: 'AVERY, Dana Kim Marchbank', appointmentCount: 2, birthMonth: 4, birthYear: 1968,
+      isCorporateOfficer: false, matchedNameTokens: 2, queryTokenCount: 2,
+      addressSnippet: '2 Placeholder Road, Sampleton', registerDescription: 'Total number of appointments 2',
+      officialUrl: 'https://find-and-update.company-information.service.gov.uk/officers/OFFICER_B/appointments' },
+    { officerId: 'OFFICER_C', name: 'AVERY, Dana', appointmentCount: 1, birthMonth: 9, birthYear: 1951,
+      isCorporateOfficer: false, matchedNameTokens: 1, queryTokenCount: 2,
+      addressSnippet: '9 Sample Lane, Exampleton', registerDescription: 'Total number of appointments 1',
+      officialUrl: 'https://find-and-update.company-information.service.gov.uk/officers/OFFICER_C/appointments' },
+    { officerId: 'CORP_A', name: 'AVERY FAMILY PENSION TRUST', appointmentCount: 1, birthMonth: null, birthYear: null,
+      isCorporateOfficer: true, matchedNameTokens: 1, queryTokenCount: 2,
+      addressSnippet: '1 Registered Office Way, Sampleton', registerDescription: 'Total number of appointments 1',
+      officialUrl: 'https://find-and-update.company-information.service.gov.uk/officers/CORP_A/appointments' }
+  ],
+  PossibleSamePersonRecords: [
+    { birthYear: 1968, birthMonth: 4, recordCount: 2, sharedNameWords: ['avery', 'dana'],
+      names: ['AVERY, Dana Kim', 'AVERY, Dana Kim Marchbank'],
+      officerIds: ['OFFICER_A', 'OFFICER_B'], appointmentsPerRecord: [26, 2],
+      addressSnippets: ['11 Example Street, Sampleton', '2 Placeholder Road, Sampleton'] }
+  ],
+  CoDirectors: [
+    { officerId: 'OFFICER_X', name: 'BLACKWOOD, Sam', sharedCompanyCount: 3, companiesOverlapped: 2,
+      companiesUndetermined: 1,
+      companies: ['Alpha Holdings Ltd', 'Beta Trading Ltd', 'Historic Works Ltd'],
+      companyNumbers: ['01234567', '02345678', '00098765'],
+      overlapPerCompany: ['overlapped', 'overlapped', 'cannot determine'],
+      rolePerCompany: ['director', 'director', 'secretary'],
+      officialUrl: 'https://find-and-update.company-information.service.gov.uk/officers/OFFICER_X/appointments' },
+    { officerId: 'OFFICER_Y', name: 'CHEN, Robin', sharedCompanyCount: 1, companiesOverlapped: 0,
+      companiesUndetermined: 0, companies: ['Alpha Holdings Ltd'], companyNumbers: ['01234567'],
+      overlapPerCompany: ['did not overlap'], rolePerCompany: ['director'],
+      officialUrl: 'https://find-and-update.company-information.service.gov.uk/officers/OFFICER_Y/appointments' }
   ],
   OfficerPassport: [
     { appointmentsRead: 50, currentAppointments: 7, formerAppointments: 43, distinctCompanies: 26,
@@ -161,13 +193,29 @@ async function searchAndSelect(page, which) {
   await page.fill('#q', 'avery');
   await page.click('#search-form button[type=submit]');
   await page.waitForSelector('.dw-candidate');
-  check('both candidates offered, never merged', (await page.locator('.dw-candidate').count()) === 2);
+  check('full-name person matches shown, never merged', (await page.locator('#candidates .dw-candidate').count()) === 2);
   const firstCard = await page.locator('.dw-candidate').first().innerText();
   check('candidate shows appointment count', /26 appointments/.test(firstCard));
   check('candidate shows birth month and year', /Born 04\/1968/.test(firstCard));
-  const secondCard = await page.locator('.dw-candidate').nth(1).innerText();
-  check('a record without a birth date says so rather than blank',
-    /Birth date not published/.test(secondCard), secondCard);
+  check('a partial-name match is set aside, not mixed in',
+    /matching only part of that name/.test(await page.locator('#btn-partial').innerText()));
+  check('corporate officers are set aside, not offered as people',
+    /recorded as an officer elsewhere/.test(await page.locator('#btn-corporate').innerText()));
+  await page.click('#btn-corporate');
+  await page.waitForTimeout(150);
+  check('a corporate officer is labelled a company, not a missing birth date',
+    /A company, not a person/.test(await page.locator('#corporate').innerText()));
+
+  console.log('\n== possible same person ==');
+  await page.waitForSelector('#duplicates .dw-obs');
+  const dup = await page.locator('#duplicates').innerText();
+  check('records sharing a birth date are grouped', /2 records here may be the same person/.test(dup));
+  check('the shared evidence is stated', /04\/1968/.test(dup) && /avery/.test(dup));
+  check('it refuses to assert they are one person', /That they ARE one person/.test(dup));
+  check('it promises never to add their counts', /never adds their appointment counts/.test(dup));
+  check('both official records are linked',
+    (await page.locator('#duplicates a[href*="/officers/OFFICER_A/"]').count()) === 1 &&
+    (await page.locator('#duplicates a[href*="/officers/OFFICER_B/"]').count()) === 1);
 
   console.log('\n== passport ==');
   await page.locator('.dw-candidate').first().click();
@@ -208,6 +256,16 @@ async function searchAndSelect(page, which) {
   check('voluntary strike-off distinguished', /voluntary strike-off/.test(diss));
   check('compulsory strike-off distinguished', /compulsory strike-off/.test(diss));
   check('dissolution is explained as lawful, not a finding', /normal, lawful way/i.test(diss));
+
+  calls = await page.evaluate(() => window.__dwCalls.map(c => c.id));
+  check('CoDirectors NOT called on render', calls.filter(c => c === 'CoDirectors').length === 0);
+  await page.click('#btn-codirectors');
+  await page.waitForSelector('#codirectors table');
+  const co = await page.locator('#codirectors').innerText();
+  check('co-directors listed', /BLACKWOOD, Sam/.test(co) && /CHEN, Robin/.test(co));
+  check('sharing a company at a different time is marked', /not at the same time/.test(co));
+  check('an undeterminable overlap says so', /dates unclear/.test(co));
+  check('co-appointment is explained as ordinary', /ordinary: partners, family firms/.test(co));
 
   console.log('\n== detail tabs ==');
   const appts = await page.locator('#appointments').innerText();
