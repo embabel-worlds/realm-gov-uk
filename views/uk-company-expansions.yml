@@ -1,0 +1,113 @@
+# Company-anchored views, each pinned to ONE company number given as a literal parameter.
+#
+# WHY THEY LOOK LIKE THIS, because it is not obvious and the obvious version does not work.
+#
+# The natural way to write "for each of this person's companies, fetch X" is one query with two
+# MATCH clauses, seeding the second anchor from a variable:
+#
+#     MATCH (o:UkOfficerRecord {officerId: $officerId})-[:HELD_APPOINTMENT]->(a:UkAppointment)
+#     WITH DISTINCT a.companyNumber AS companyNumber
+#     MATCH (c:UkCompany {companyNumber: companyNumber})-[:HAS_OFFICER]->(x:UkCompanyOfficer)
+#
+# That FAILS. Measured by bisection on 2026-08-03 against the live engine, with four probe views:
+#   · first hop alone                                    -> OK, 4 rows
+#   · second hop seeded from a VARIABLE, via HAS_OFFICER -> FAILED
+#   · second hop seeded from a VARIABLE, via HAS_PROFILE -> FAILED
+#   · second hop pinned to a LITERAL company number      -> OK, 96 rows
+#
+# So the company producers are healthy and the anchor types are declared; what the engine will not
+# do is bind a virtual anchor from a value carried in from an earlier stage. The failure is silent
+# and total: no anchor probe, no fetch, no rows, and a sanitised "operation could not be completed".
+#
+# Hence: every expansion below takes ONE company number, and the caller loops. That is more calls
+# from the app's side, but each is cheap, cached, independently cancellable, and renders as it
+# arrives instead of the reader waiting for the slowest company in the set.
+
+- name: CompanyOfficersOf
+  description: >-
+    Every officer the register lists against ONE company, with their dates and their own officer
+    identifier. This is the building block of the co-director web: call it for each company a
+    person sits on and the people who recur are the ones they work alongside. Two people listed on
+    one company may have served a decade apart, so the dates here are what decides whether they
+    actually overlapped — never the mere fact of appearing together.
+  params:
+    companyNumber:
+      type: string
+      description: "The Companies House company number."
+  cypher: |
+    MATCH (c:UkCompany {companyNumber: $companyNumber})-[:HAS_OFFICER]->(x:UkCompanyOfficer)
+    RETURN split(x.officerLink, '/')[2] AS officerId,
+           x.officerName        AS name,
+           x.officerRole        AS officerRole,
+           x.appointedOn        AS appointedOn,
+           x.appointedBefore    AS appointedBefore,
+           x.resignedOn         AS resignedOn,
+           x.isPre1992Appointment AS isPre1992Appointment,
+           x.personNumber       AS personNumber,
+           'https://find-and-update.company-information.service.gov.uk' + x.officerLink AS officialUrl
+    ORDER BY name
+
+- name: CompanyProfileOf
+  description: >-
+    ONE company's register profile — incorporation date, precise status, declared activity codes
+    and registered office. Incorporation dates are what a formation-cluster reading needs, and
+    activity codes are self-declared and often left at a broad default.
+  params:
+    companyNumber:
+      type: string
+      description: "The Companies House company number."
+  cypher: |
+    MATCH (c:UkCompany {companyNumber: $companyNumber})-[:HAS_PROFILE]->(p:UkCompanyProfile)
+    RETURN p.companyName        AS companyName,
+           p.companyStatus      AS companyStatus,
+           p.companyStatusDetail AS companyStatusDetail,
+           p.companyType        AS companyType,
+           p.dateOfCreation     AS dateOfCreation,
+           p.dateOfCessation    AS dateOfCessation,
+           p.sicCodes           AS sicCodes,
+           p.registeredOfficePostalCode AS registeredOfficePostalCode,
+           p.registeredOfficeLocality   AS registeredOfficeLocality,
+           p.hasInsolvencyHistory       AS hasInsolvencyHistory
+
+- name: CompanyDissolutionOf
+  description: >-
+    How ONE company was closed, from its gazette filings — voluntary strike-off, compulsory
+    strike-off, or an application to strike off. Company status says only 'dissolved'; this is the
+    only place the register draws the distinction. Voluntary strike-off is a normal, lawful way to
+    close a company that is no longer needed.
+  params:
+    companyNumber:
+      type: string
+      description: "The Companies House company number."
+  cypher: |
+    MATCH (c:UkCompany {companyNumber: $companyNumber})-[:HAS_FILING]->(f:UkFilingEvent)
+    WITH collect(DISTINCT f.filingDescription) AS descriptions,
+         collect(DISTINCT f.filingType)        AS filingTypes,
+         max(f.filingDate)                     AS latestFilingDate
+    RETURN CASE
+             WHEN any(d IN descriptions WHERE d CONTAINS 'dissolved-voluntary')  THEN 'voluntary strike-off'
+             WHEN any(d IN descriptions WHERE d CONTAINS 'dissolved-compulsory') THEN 'compulsory strike-off'
+             WHEN any(d IN descriptions WHERE d CONTAINS 'strike-off')           THEN 'strike-off applied for'
+             ELSE 'not stated in gazette filings'
+           END              AS mannerOfDissolution,
+           descriptions     AS registerFilingDescriptions,
+           filingTypes      AS registerFilingTypes,
+           latestFilingDate
+
+- name: CompanyInsolvencyOf
+  description: >-
+    ONE company's insolvency record: case types, the first dated event and the appointed
+    practitioners. Insolvency is a lawful statutory process — a company that cannot pay its debts
+    is supposed to enter one — and a practitioner named here is an appointed professional, not a
+    party to the company's conduct.
+  params:
+    companyNumber:
+      type: string
+      description: "The Companies House company number."
+  cypher: |
+    MATCH (c:UkCompany {companyNumber: $companyNumber})-[:HAS_INSOLVENCY]->(i:UkInsolvencyRecord)
+    RETURN i.insolvencyStatus       AS registerStatus,
+           i.caseTypes              AS caseTypes,
+           i.firstCaseDateType      AS firstEventType,
+           i.firstCaseDate          AS firstEventDate,
+           i.firstCasePractitioners AS practitioners

@@ -8,7 +8,7 @@
 <link rel="stylesheet" href="/api/v1/apps-runtime/v1/theme.css">
 <script src="/api/v1/apps-runtime/v1/embabel.js"></script>
 <script type="application/embabel-app+json">
-{"version":1,"name":"director-web","requires":{"lenses":[],"views":["OfficerSearchCandidates","OfficerPassport","OfficerAppointments","OfficerCompaniesByStatus","OfficerTimeline","PossibleSamePersonRecords","CoDirectors","BusinessActivities","ManyAppointments","SynchronousRoleChanges","FormationBurst","OfficerDissolutionManner"],"realms":["gov-uk"],"namespaces":[]}}
+{"version":1,"name":"director-web","requires":{"lenses":[],"views":["OfficerSearchCandidates","OfficerPassport","OfficerAppointments","OfficerCompaniesByStatus","OfficerTimeline","PossibleSamePersonRecords","CompanyOfficersOf","CompanyProfileOf","CompanyDissolutionOf","ManyAppointments","SynchronousRoleChanges"],"realms":["gov-uk"],"namespaces":[]}}
 </script>
 <style>
   /* Rides the v1 theme tokens and recolours only the accent pair, so shared components stay
@@ -307,7 +307,24 @@
     timeline: runnerFor('timeline-state')
   };
 
-  var selected = null;   // { officerId, name }
+  var selected = null;                  // { officerId, name }
+  var appointmentsForSelected = [];     // this record's appointments, for the per-company loops
+  var COMPANY_EXPANSION_CAP = 12;       // each company is a separate read of the register
+
+  function partialNote(n) {
+    return '<div class="dw-caution"><strong>Partial.</strong> ' + n + ' compan' +
+      (n === 1 ? 'y' : 'ies') + ' could not be read, so anything only they would have shown is ' +
+      'missing here.</div>';
+  }
+
+  /** ISO dates compare correctly as strings. A missing start on either side means the register
+      cannot say whether the two served together — report that, never assume they did. */
+  function overlapOf(mine, theirs) {
+    if (!mine.appointedOn || !theirs.appointedOn) return 'cannot determine';
+    if ((!mine.resignedOn || theirs.appointedOn <= mine.resignedOn) &&
+        (!theirs.resignedOn || mine.appointedOn <= theirs.resignedOn)) return 'overlapped';
+    return 'did not overlap';
+  }
 
   // ── search ────────────────────────────────────────────────────────────────────────────────
 
@@ -475,6 +492,7 @@
     $('deep-results').innerHTML = '';
     $('codirectors').innerHTML = '';
     $('activities').innerHTML = '';
+    appointmentsForSelected = [];
     show($('passport-card'), true);
     show($('observations-card'), true);
     show($('detail-card'), true);
@@ -621,139 +639,229 @@
     if (selected) loadActivities(selected.officerId);
   });
 
-  // One register call per company, so this is on request only.
+  // One register call PER COMPANY, on request only — same reason as the co-director loop.
   async function loadActivities(officerId) {
     $('activities').innerHTML = '';
-    try {
-      var env = await runners.activities.view('BusinessActivities', { officerId: officerId },
-        { expectation: 'Reading each company’s declared activities, one company at a time.' });
-      if (!env) return;
-      var rows = rowsOf(env);
-      if (!rows.length) {
-        $('activities').innerHTML = warningHtml(env) +
-          '<p class="dw-empty">None of these companies declares an activity code.</p>';
-        return;
-      }
-      var body = rows.map(function (r) {
-        return '<tr><td>' + escapeHtml(r.activity) + '</td>' +
-          '<td><span class="dw-pill">' + escapeHtml(r.sicCode) + '</span></td>' +
-          '<td>' + num(r.companyCount) + '</td>' +
-          '<td>' + companyListHtml(r.companies, r.companyNumbers) + '</td></tr>';
-      }).join('');
-      $('activities').innerHTML = warningHtml(env) +
-        '<h3>What these companies say they do</h3>' +
-        '<p class="dw-sub">Activity codes are SELF-DECLARED by each company and are often left at a ' +
-        'broad default, so this records what a company told the register it would do — not what it ' +
-        'did, and not what it earned. A company may declare several activities, so these counts ' +
-        'add up to more than the number of companies.</p>' +
-        '<div class="dw-scroll"><table class="dw-table"><thead><tr><th>Activity</th><th>Code</th>' +
-        '<th>Companies</th><th>Which</th></tr></thead><tbody>' + body + '</tbody></table></div>';
-    } catch (err) {
-      $('activities').innerHTML = '<p class="dw-empty">The register did not answer: ' +
-        escapeHtml(err && err.message || String(err)) + '</p>';
+    var mine = appointmentsForSelected.slice(0, COMPANY_EXPANSION_CAP);
+    if (!mine.length) {
+      $('activities').innerHTML = '<p class="dw-empty">No appointments were read for this record.</p>';
+      return;
     }
+    var state = $('activities-state');
+    var byCode = {};
+    var failures = 0;
+    try {
+      for (var i = 0; i < mine.length; i++) {
+        if (state) state.setAttribute('label',
+          'Reading ' + mine[i].companyName + ' (' + (i + 1) + ' of ' + mine.length + ')');
+        var env = null;
+        try {
+          env = await embabel.views.invoke('CompanyProfileOf', { companyNumber: mine[i].companyNumber });
+        } catch (oneErr) { failures++; continue; }
+        var prof = rowsOf(env)[0];
+        if (!prof || !prof.sicCodes) continue;
+        var codes = Array.isArray(prof.sicCodes) ? prof.sicCodes : [prof.sicCodes];
+        var label = prof.companyName || mine[i].companyName;
+        var number = mine[i].companyNumber;
+        codes.forEach(function (code) {
+          var e = byCode[code] || (byCode[code] = { code: code, companies: [], numbers: [] });
+          e.companies.push(label);
+          e.numbers.push(number);
+        });
+      }
+    } finally { if (state) state.removeAttribute('label'); }
+
+    var list = Object.keys(byCode).map(function (k) { return byCode[k]; })
+      .sort(function (a, b) { return b.companies.length - a.companies.length; });
+    if (!list.length) {
+      $('activities').innerHTML = (failures ? partialNote(failures) : '') +
+        '<p class="dw-empty">None of these companies declares an activity code.</p>';
+      return;
+    }
+    var body = list.map(function (r) {
+      return '<tr><td><span class="dw-pill">' + escapeHtml(r.code) + '</span></td><td>' +
+        num(r.companies.length) + '</td><td>' + companyListHtml(r.companies, r.numbers) + '</td></tr>';
+    }).join('');
+    $('activities').innerHTML = (failures ? partialNote(failures) : '') +
+      '<h3>What these companies say they do</h3>' +
+      '<p class="dw-sub">Activity codes are SELF-DECLARED by each company and are often left at a ' +
+      'broad default, so this records what a company told the register it would do — not what it ' +
+      'did, and not what it earned. A company may declare several activities, so these counts ' +
+      'add up to more than the number of companies.</p>' +
+      '<div class="dw-scroll"><table class="dw-table"><thead><tr><th>SIC code</th>' +
+      '<th>Companies</th><th>Which</th></tr></thead><tbody>' + body + '</tbody></table></div>';
   }
 
-  // One register call per company, so this is on request only.
+  // One register call PER COMPANY, on request only.
+  //
+  // The loop over companies lives HERE rather than inside one view because the engine cannot seed
+  // a virtual anchor from a value carried in from an earlier query stage. Proven by bisection on
+  // 2026-08-03: the identical second hop pinned to a LITERAL company number returns rows, while
+  // seeded from a variable it returns nothing at all — no fetch, no error, just an empty panel.
+  // So the app pins one company at a time and aggregates the answers itself.
   async function loadCoDirectors(officerId) {
     $('codirectors').innerHTML = '';
-    try {
-      var env = await runners.codirectors.view('CoDirectors',
-        { officerId: officerId, minSharedCompanies: 1 },
-        { expectation: 'Reading the officer list of each company, one company at a time.' });
-      if (!env) return;
-      var rows = rowsOf(env);
-      if (!rows.length) {
-        $('codirectors').innerHTML = warningHtml(env) +
-          '<p class="dw-empty">The register lists no other officers on these companies.</p>';
-        return;
-      }
-      var body = rows.map(function (r) {
-        var where = r.companies.map(function (c, i) {
-          var mark = r.overlapPerCompany[i] === 'overlapped' ? ''
-            : r.overlapPerCompany[i] === 'did not overlap' ? ' <span class="dw-pill">not at the same time</span>'
-            : ' <span class="dw-pill">dates unclear</span>';
-          return companyLink(r.companyNumbers[i], c) + mark;
-        }).join('<br>');
-        return '<tr><td>' + link(r.officialUrl, r.name) + '</td>' +
-          '<td>' + num(r.sharedCompanyCount) + '</td>' +
-          '<td>' + num(r.companiesOverlapped) + '</td>' +
-          '<td>' + where + '</td></tr>';
-      }).join('');
-      $('codirectors').innerHTML = warningHtml(env) +
-        '<h3>Who they sit on boards with</h3>' +
-        '<p class="dw-sub">Sharing a company is a recorded fact; sharing it AT THE SAME TIME is a ' +
-        'different one, so each company says which. Where either appointment has no exact date — ' +
-        'every pre-1992 record — the register cannot answer and neither does this. Repeated ' +
-        'co-appointment is ordinary: partners, family firms and professional advisers all produce it.</p>' +
-        '<div class="dw-scroll"><table class="dw-table"><thead><tr><th>Officer</th>' +
-        '<th>Companies shared</th><th>Of those, overlapping</th><th>Which companies</th>' +
-        '</tr></thead><tbody>' + body + '</tbody></table></div>';
-    } catch (err) {
-      $('codirectors').innerHTML = '<p class="dw-empty">The register did not answer: ' +
-        escapeHtml(err && err.message || String(err)) + '</p>';
+    var mine = appointmentsForSelected;
+    if (!mine.length) {
+      $('codirectors').innerHTML = '<p class="dw-empty">No appointments were read for this record, ' +
+        'so there are no boards to look at.</p>';
+      return;
     }
+    var companies = mine.slice(0, COMPANY_EXPANSION_CAP);
+    var capped = mine.length > companies.length;
+    var state = $('codirectors-state');
+    var byOfficer = {};
+    var failures = 0;
+    try {
+      for (var i = 0; i < companies.length; i++) {
+        var appt = companies[i];
+        if (state) state.setAttribute('label', 'Reading the board of ' + appt.companyName +
+          ' (' + (i + 1) + ' of ' + companies.length + ')');
+        var env = null;
+        try {
+          env = await embabel.views.invoke('CompanyOfficersOf', { companyNumber: appt.companyNumber });
+        } catch (oneErr) { failures++; continue; }
+        rowsOf(env).forEach(function (o) {
+          if (!o.officerId || o.officerId === officerId) return;
+          var entry = byOfficer[o.officerId] || (byOfficer[o.officerId] = {
+            officerId: o.officerId, name: o.name, officialUrl: o.officialUrl, shared: []
+          });
+          entry.shared.push({ company: appt.companyName, number: appt.companyNumber,
+                              overlap: overlapOf(appt, o) });
+        });
+      }
+    } finally { if (state) state.removeAttribute('label'); }
+
+    var people = Object.keys(byOfficer).map(function (k) { return byOfficer[k]; })
+      .sort(function (a, b) { return b.shared.length - a.shared.length; });
+    if (!people.length) {
+      $('codirectors').innerHTML = (failures ? partialNote(failures) : '') +
+        '<p class="dw-empty">The register lists no other officers on those companies.</p>';
+      return;
+    }
+    var body = people.map(function (p) {
+      var where = p.shared.map(function (sh) {
+        var mark = sh.overlap === 'overlapped' ? ''
+          : sh.overlap === 'did not overlap' ? ' <span class="dw-pill">not at the same time</span>'
+          : ' <span class="dw-pill">dates unclear</span>';
+        return companyLink(sh.number, sh.company) + mark;
+      }).join('<br>');
+      var together = p.shared.filter(function (sh) { return sh.overlap === 'overlapped'; }).length;
+      return '<tr><td>' + link(p.officialUrl, p.name) + '</td><td>' + num(p.shared.length) +
+        '</td><td>' + num(together) + '</td><td>' + where + '</td></tr>';
+    }).join('');
+    $('codirectors').innerHTML = (failures ? partialNote(failures) : '') +
+      (capped ? '<div class="dw-caution"><strong>First ' + companies.length + ' companies only.</strong> ' +
+        'This record has ' + mine.length + ', and each board is a separate read of the register.</div>' : '') +
+      '<h3>Who they sit on boards with</h3>' +
+      '<p class="dw-sub">Sharing a company is a recorded fact; sharing it AT THE SAME TIME is a ' +
+      'different one, so each company says which. Where either appointment has no exact date — ' +
+      'every pre-1992 record — the register cannot answer and neither does this. Repeated ' +
+      'co-appointment is ordinary: partners, family firms and professional advisers all produce it.</p>' +
+      '<div class="dw-scroll"><table class="dw-table"><thead><tr><th>Officer</th>' +
+      '<th>Companies shared</th><th>Of those, overlapping</th><th>Which companies</th>' +
+      '</tr></thead><tbody>' + body + '</tbody></table></div>';
   }
 
+  // One register call PER COMPANY, on request only. The clustering is done here because the
+  // incorporation dates arrive company by company — see the co-director loop for why.
   async function loadFormationBurst(officerId) {
     $('deep-results').innerHTML = '';
-    try {
-      var env = await runners.deep.view('FormationBurst',
-        { officerId: officerId, windowDays: 120, minInGroup: 3 },
-        { expectation: 'Reading each company’s incorporation date, one company at a time.' });
-      if (!env) return;
-      var rows = rowsOf(env);
-      if (!rows.length) {
-        $('deep-results').innerHTML = warningHtml(env) +
-          '<p class="dw-empty">No group of three or more of these companies was incorporated within ' +
-          '120 days of each other.</p>';
-        return;
-      }
-      var g = rows[0];
-      $('deep-results').innerHTML = warningHtml(env) + observation(
-        num(g.companiesIncorporatedInWindow) + ' connected companies were incorporated within 120 days',
-        'Between ' + escapeHtml(g.earliestInWindow) + ' and ' + escapeHtml(g.latestInWindow) + '.',
-        'It is a useful cluster for exploring shared directors, addresses or business activity.',
-        'Companies in a legitimate group, fund structure or property portfolio are very often formed ' +
-          'together; timing alone shows nothing about purpose.',
-        companyListHtml(g.companies, g.companyNumbers));
-    } catch (err) {
-      $('deep-results').innerHTML = '<p class="dw-empty">The register did not answer: ' +
-        escapeHtml(err && err.message || String(err)) + '</p>';
+    var mine = appointmentsForSelected.slice(0, COMPANY_EXPANSION_CAP);
+    if (!mine.length) {
+      $('deep-results').innerHTML = '<p class="dw-empty">No appointments were read for this record.</p>';
+      return;
     }
+    var state = $('deep-state');
+    var formed = [];
+    var failures = 0;
+    try {
+      for (var i = 0; i < mine.length; i++) {
+        if (state) state.setAttribute('label',
+          'Reading ' + mine[i].companyName + ' (' + (i + 1) + ' of ' + mine.length + ')');
+        var env = null;
+        try {
+          env = await embabel.views.invoke('CompanyProfileOf', { companyNumber: mine[i].companyNumber });
+        } catch (oneErr) { failures++; continue; }
+        var prof = rowsOf(env)[0];
+        if (prof && prof.dateOfCreation) {
+          formed.push({ date: prof.dateOfCreation, name: prof.companyName || mine[i].companyName,
+                        number: mine[i].companyNumber });
+        }
+      }
+    } finally { if (state) state.removeAttribute('label'); }
+
+    var WINDOW_DAYS = 120, MIN_IN_GROUP = 3;
+    var best = null;
+    formed.forEach(function (anchor) {
+      var near = formed.filter(function (f) {
+        return Math.abs(Date.parse(f.date) - Date.parse(anchor.date)) <= WINDOW_DAYS * 86400000;
+      });
+      if (near.length >= MIN_IN_GROUP && (!best || near.length > best.length)) best = near;
+    });
+    if (!best) {
+      $('deep-results').innerHTML = (failures ? partialNote(failures) : '') +
+        '<p class="dw-empty">No group of three or more of these companies was incorporated within ' +
+        WINDOW_DAYS + ' days of each other.</p>';
+      return;
+    }
+    var dates = best.map(function (f) { return f.date; }).sort();
+    $('deep-results').innerHTML = (failures ? partialNote(failures) : '') + observation(
+      num(best.length) + ' connected companies were incorporated within ' + WINDOW_DAYS + ' days',
+      'Between ' + escapeHtml(dates[0]) + ' and ' + escapeHtml(dates[dates.length - 1]) + '.',
+      'It is a useful cluster for exploring shared directors, addresses or business activity.',
+      'Companies in a legitimate group, fund structure or property portfolio are very often formed ' +
+        'together; timing alone shows nothing about purpose.',
+      companyListHtml(best.map(function (f) { return f.name; }), best.map(function (f) { return f.number; })));
   }
 
+  // One register call PER DISSOLVED COMPANY, on request only.
   async function loadDissolutionManner(officerId) {
     $('deep-results').innerHTML = '';
-    try {
-      var env = await runners.deep.view('OfficerDissolutionManner', { officerId: officerId }, {
-        expectation: 'Reading the gazette filings of each dissolved company, one at a time.'
-      });
-      if (!env) return;
-      var rows = rowsOf(env);
-      if (!rows.length) {
-        $('deep-results').innerHTML = warningHtml(env) +
-          '<p class="dw-empty">None of this record’s companies is recorded as dissolved.</p>';
-        return;
-      }
-      var body = rows.map(function (r) {
-        return '<tr><td>' + companyLink(r.companyNumber, r.companyName) + '</td>' +
-          '<td>' + escapeHtml(r.mannerOfDissolution) + '</td>' +
-          '<td>' + escapeHtml(r.latestFilingDate || '') + '</td>' +
-          '<td>' + link(r.filingHistoryUrl, 'Filings') + '</td></tr>';
-      }).join('');
-      $('deep-results').innerHTML = warningHtml(env) +
-        '<h3>How each dissolved company was closed</h3>' +
-        '<p class="dw-sub">Company status says only &ldquo;dissolved&rdquo;. Whether a strike-off was ' +
-        'voluntary or compulsory appears only in the gazette filings, which is what this reads. ' +
-        'Voluntary strike-off is a normal, lawful way to close a company that is no longer needed.</p>' +
-        '<div class="dw-scroll"><table class="dw-table"><thead><tr><th>Company</th>' +
-        '<th>Manner of dissolution</th><th>Latest filing</th><th>Source</th></tr></thead>' +
-        '<tbody>' + body + '</tbody></table></div>';
-    } catch (err) {
-      $('deep-results').innerHTML = '<p class="dw-empty">The register did not answer: ' +
-        escapeHtml(err && err.message || String(err)) + '</p>';
+    var dissolved = appointmentsForSelected
+      .filter(function (a) { return a.companyStatus === 'dissolved'; })
+      .slice(0, COMPANY_EXPANSION_CAP);
+    if (!dissolved.length) {
+      $('deep-results').innerHTML =
+        '<p class="dw-empty">None of this record’s companies is recorded as dissolved.</p>';
+      return;
     }
+    var state = $('deep-state');
+    var rows = [];
+    var failures = 0;
+    try {
+      for (var i = 0; i < dissolved.length; i++) {
+        if (state) state.setAttribute('label', 'Reading the filings of ' + dissolved[i].companyName +
+          ' (' + (i + 1) + ' of ' + dissolved.length + ')');
+        var env = null;
+        try {
+          env = await embabel.views.invoke('CompanyDissolutionOf', { companyNumber: dissolved[i].companyNumber });
+        } catch (oneErr) { failures++; continue; }
+        var r = rowsOf(env)[0];
+        if (r) rows.push({ name: dissolved[i].companyName, number: dissolved[i].companyNumber,
+                           manner: r.mannerOfDissolution, date: r.latestFilingDate });
+      }
+    } finally { if (state) state.removeAttribute('label'); }
+
+    if (!rows.length) {
+      $('deep-results').innerHTML = (failures ? partialNote(failures) : '') +
+        '<p class="dw-empty">The register holds no gazette filings for those companies.</p>';
+      return;
+    }
+    var body = rows.map(function (r) {
+      return '<tr><td>' + companyLink(r.number, r.name) + '</td><td>' + escapeHtml(r.manner) +
+        '</td><td>' + escapeHtml(r.date || '') + '</td><td>' +
+        link('https://find-and-update.company-information.service.gov.uk/company/' + r.number +
+             '/filing-history', 'Filings') + '</td></tr>';
+    }).join('');
+    $('deep-results').innerHTML = (failures ? partialNote(failures) : '') +
+      '<h3>How each dissolved company was closed</h3>' +
+      '<p class="dw-sub">Company status says only &ldquo;dissolved&rdquo;. Whether a strike-off was ' +
+      'voluntary or compulsory appears only in the gazette filings, which is what this reads. ' +
+      'Voluntary strike-off is a normal, lawful way to close a company that is no longer needed.</p>' +
+      '<div class="dw-scroll"><table class="dw-table"><thead><tr><th>Company</th>' +
+      '<th>Manner of dissolution</th><th>Latest filing</th><th>Source</th></tr></thead>' +
+      '<tbody>' + body + '</tbody></table></div>';
   }
 
   // ── detail tabs ───────────────────────────────────────────────────────────────────────────
@@ -781,6 +889,8 @@
         { expectation: 'Listing every appointment on this record.' });
       if (!env) return;
       var rows = rowsOf(env);
+      // Kept so the per-company loops know which companies to read, and with what dates.
+      appointmentsForSelected = rows.filter(function (r) { return r.companyNumber; });
       if (!rows.length) {
         $('appointments').innerHTML = '<p class="dw-empty">The register lists no appointments for this record.</p>';
         return;

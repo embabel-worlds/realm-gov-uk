@@ -1,20 +1,20 @@
-# The three Phase 1 observations, plus the manner-of-dissolution drill-down.
+# Observations computed from the ONE passport call, plus the sanctions name check.
 #
-# What an observation IS here: a reproducible calculation over records already fetched, whose
-# constituent records travel WITH the number so the drill-down contract is satisfied by the row
-# itself. What it is NOT, ever: a score, a ranking of people by suspicion, or a claim that a
-# pattern is unusual. Nothing in this file computes a ratio presented as risk or orders people by
-# anything other than a count the evidence drawer can prove.
+# WHAT IS NOT HERE, AND WHY. Five views once lived in this file — co-directors, formation clusters,
+# business activities, manner of dissolution and insolvency history — each written as a single
+# query that walked from the officer to their companies and then fetched something per company:
 #
-# Every threshold is a PARAMETER WITH A DEFAULT, deliberately. The product promises that its
-# thresholds are editorial, configurable and published — and here the parameters ARE the
-# published methodology, rather than a number buried in code that a methodology page then
-# describes second-hand and eventually inaccurately.
+#     WITH DISTINCT a.companyNumber AS companyNumber
+#     MATCH (c:UkCompany {companyNumber: companyNumber})-[:HAS_OFFICER]->(x:UkCompanyOfficer)
 #
-# Cost note: ManyAppointments and SynchronousRoleChanges run entirely on the ONE passport call.
-# FormationBurst does not — it needs an incorporation date per company, which is one API call per
-# company. It is therefore an explicitly requested expansion, never something a passport render
-# triggers by itself.
+# Every one of them failed, silently and completely. Bisection on 2026-08-03 against the live
+# engine showed the second hop works when the company number is a LITERAL and fails when it is a
+# VARIABLE carried in from an earlier stage — no anchor probe, no fetch, no rows, and a sanitised
+# "the operation could not be completed". They have been REPLACED by the per-company views in
+# views/uk-company-expansions.yml, which the app calls once per company and aggregates itself.
+#
+# Do not reinstate the single-query form until that engine limitation is fixed; it looks correct,
+# passes Neo4j's own EXPLAIN, and returns nothing.
 
 - name: ManyAppointments
   description: >-
@@ -75,199 +75,6 @@
            [e IN grouped | e.name]                AS companies,
            [e IN grouped | e.number]              AS companyNumbers
     ORDER BY resignationsInWindow DESC, windowAnchorDate DESC
-
-- name: FormationBurst
-  description: >-
-    Groups of this officer's companies incorporated close together in time. Companies in a
-    legitimate group, a fund structure or a property portfolio are very often formed in one
-    batch, so timing alone shows nothing about purpose — it shows where to look for a shared
-    business reason, shared directors or a shared address. COSTS ONE API CALL PER COMPANY, since
-    incorporation dates are not on the appointment record: request it deliberately, not as part
-    of rendering a passport.
-  params:
-    officerId:
-      type: string
-      description: "The Companies House officer identifier."
-    windowDays:
-      type: int
-      default: 120
-      description: "How close together two incorporations must be to fall in one group."
-    minInGroup:
-      type: int
-      default: 3
-      description: "Smallest group worth reporting."
-  cypher: |
-    MATCH (o:UkOfficerRecord {officerId: $officerId})-[:HELD_APPOINTMENT]->(a:UkAppointment)
-    WITH DISTINCT a.companyNumber AS companyNumber
-    MATCH (c:UkCompany {companyNumber: companyNumber})-[:HAS_PROFILE]->(p:UkCompanyProfile)
-    WHERE p.dateOfCreation IS NOT NULL
-    WITH collect({d: date(p.dateOfCreation), name: p.companyName, number: companyNumber,
-                  status: p.companyStatus}) AS formations
-    UNWIND formations AS anchorFormation
-    WITH anchorFormation, formations,
-         [f IN formations WHERE abs(duration.inDays(anchorFormation.d, f.d).days) <= $windowDays] AS grouped
-    WHERE size(grouped) >= $minInGroup
-    RETURN toString(anchorFormation.d)            AS windowAnchorDate,
-           size(grouped)                          AS companiesIncorporatedInWindow,
-           toString(reduce(m = anchorFormation.d, f IN grouped | CASE WHEN f.d < m THEN f.d ELSE m END)) AS earliestInWindow,
-           toString(reduce(m = anchorFormation.d, f IN grouped | CASE WHEN f.d > m THEN f.d ELSE m END)) AS latestInWindow,
-           [f IN grouped | f.name]                AS companies,
-           [f IN grouped | f.number]              AS companyNumbers,
-           [f IN grouped | f.status]              AS companyStatuses
-    ORDER BY companiesIncorporatedInWindow DESC, windowAnchorDate DESC
-
-- name: CoDirectors
-  description: >-
-    The other officers recorded on this person's companies — who they sit on boards with. For each
-    one: which companies they share, and for each of those, whether the two roles actually
-    OVERLAPPED in time, did not, or cannot be determined from the register.
-
-    That distinction is the whole point. Two people listed on the same company may have been there
-    a decade apart, and a bare co-occurrence would imply a working relationship the dates do not
-    support. Where either side's appointment lacks an exact date — every pre-1992 record does —
-    the answer is 'cannot determine', never a guess.
-
-    Repeated co-appointment is ordinary: business partners, family firms, a professional services
-    partnership, an accountant who sits on client boards, or a corporate group's standing
-    directors all produce it. It shows who to read about next, not that anything was arranged.
-    Costs one register call per company.
-  params:
-    officerId:
-      type: string
-      description: "The Companies House officer identifier."
-    minSharedCompanies:
-      type: int
-      default: 1
-      description: "Only show people sharing at least this many companies. Raise it to find recurring partners."
-  cypher: |
-    MATCH (o:UkOfficerRecord {officerId: $officerId})-[:HELD_APPOINTMENT]->(a:UkAppointment)
-    WITH a.companyNumber AS companyNumber, a.companyName AS companyName,
-         a.appointedOn AS myStart, a.resignedOn AS myEnd
-    MATCH (c:UkCompany {companyNumber: companyNumber})-[:HAS_OFFICER]->(x:UkCompanyOfficer)
-    WITH companyNumber, companyName, myStart, myEnd, x,
-         split(x.officerLink, '/')[2] AS otherOfficerId
-    WHERE otherOfficerId <> $officerId
-    WITH otherOfficerId, x.officerName AS otherName, x.officerRole AS otherRole,
-         companyNumber, companyName,
-         // ISO dates compare correctly as strings. A missing start on either side means the
-         // register cannot answer the question — say so rather than assume they coincided.
-         CASE
-           WHEN myStart IS NULL OR x.appointedOn IS NULL THEN 'cannot determine'
-           WHEN (myEnd IS NULL OR x.appointedOn <= myEnd)
-            AND (x.resignedOn IS NULL OR myStart <= x.resignedOn) THEN 'overlapped'
-           ELSE 'did not overlap'
-         END AS overlap
-    WITH otherOfficerId, otherName,
-         collect(DISTINCT {company: companyName, number: companyNumber, overlap: overlap, role: otherRole}) AS shared
-    WITH otherOfficerId, otherName, shared,
-         size([s IN shared WHERE s.overlap = 'overlapped'])        AS companiesOverlapped,
-         size([s IN shared WHERE s.overlap = 'cannot determine'])  AS companiesUndetermined
-    WHERE size(shared) >= $minSharedCompanies
-    RETURN otherOfficerId               AS officerId,
-           otherName                    AS name,
-           size(shared)                 AS sharedCompanyCount,
-           companiesOverlapped,
-           companiesUndetermined,
-           [s IN shared | s.company]    AS companies,
-           [s IN shared | s.number]     AS companyNumbers,
-           [s IN shared | s.overlap]    AS overlapPerCompany,
-           [s IN shared | s.role]       AS rolePerCompany,
-           'https://find-and-update.company-information.service.gov.uk/officers/'
-             + otherOfficerId + '/appointments' AS officialUrl
-    ORDER BY sharedCompanyCount DESC, companiesOverlapped DESC, name
-
-- name: OfficerDissolutionManner
-  description: >-
-    For one officer's DISSOLVED companies, what the register's gazette filings say about HOW each
-    was dissolved — voluntary strike-off, compulsory strike-off, or an application to strike off.
-    This exists because company status cannot answer it: the status enum has no strike-off value,
-    so a passport that stopped at 'dissolved' would flatten a distinction the register genuinely
-    draws. Voluntary strike-off is a normal, lawful way to close a company that is no longer
-    needed. Costs one API call per dissolved company.
-  params:
-    officerId:
-      type: string
-      description: "The Companies House officer identifier."
-  cypher: |
-    MATCH (o:UkOfficerRecord {officerId: $officerId})-[:HELD_APPOINTMENT]->(a:UkAppointment)
-    WHERE a.companyStatus = 'dissolved'
-    WITH DISTINCT a.companyNumber AS companyNumber, a.companyName AS companyName
-    MATCH (c:UkCompany {companyNumber: companyNumber})-[:HAS_FILING]->(f:UkFilingEvent)
-    WITH companyNumber, companyName,
-         collect(DISTINCT f.filingDescription) AS filingDescriptions,
-         collect(DISTINCT f.filingType)        AS filingTypes,
-         max(f.filingDate)                     AS latestFilingDate
-    RETURN companyName, companyNumber,
-           CASE
-             WHEN any(d IN filingDescriptions WHERE d CONTAINS 'dissolved-voluntary')  THEN 'voluntary strike-off'
-             WHEN any(d IN filingDescriptions WHERE d CONTAINS 'dissolved-compulsory') THEN 'compulsory strike-off'
-             WHEN any(d IN filingDescriptions WHERE d CONTAINS 'strike-off')           THEN 'strike-off applied for'
-             ELSE 'not stated in gazette filings'
-           END                AS mannerOfDissolution,
-           filingDescriptions AS registerFilingDescriptions,
-           filingTypes        AS registerFilingTypes,
-           latestFilingDate,
-           'https://find-and-update.company-information.service.gov.uk/company/'
-             + companyNumber + '/filing-history' AS filingHistoryUrl
-    ORDER BY latestFilingDate DESC, companyName
-
-- name: BusinessActivities
-  description: >-
-    What this person's companies say they DO, in the register's own words — every activity code
-    across their companies, how many companies declare it, and which. This is the quickest way to
-    see whether a large network is one line of business or many unrelated ones.
-
-    A SIC code is SELF-DECLARED by the company and is frequently left at a broad default, so it
-    records what a company told the register it would do — not what it actually did, and not what
-    it earned. A company may declare several activities, so the counts here sum to more than the
-    number of companies. Costs one register call per company.
-  params:
-    officerId:
-      type: string
-      description: "The Companies House officer identifier."
-  cypher: |
-    MATCH (o:UkOfficerRecord {officerId: $officerId})-[:HELD_APPOINTMENT]->(a:UkAppointment)
-    WITH DISTINCT a.companyNumber AS companyNumber
-    MATCH (c:UkCompany {companyNumber: companyNumber})-[:HAS_PROFILE]->(p:UkCompanyProfile)
-    WHERE p.sicCodes IS NOT NULL
-    UNWIND p.sicCodes AS sicCode
-    WITH sicCode, collect(DISTINCT p.companyName) AS companies,
-         collect(DISTINCT companyNumber) AS companyNumbers
-    // The catalogue is seeded reference data, so a code with no entry still reports its number
-    // rather than vanishing from the summary.
-    OPTIONAL MATCH (s:SicCode {code: sicCode})
-    RETURN sicCode,
-           coalesce(s.description, '(no description published for this code)') AS activity,
-           size(companies) AS companyCount,
-           companies, companyNumbers
-    ORDER BY companyCount DESC, activity
-
-- name: CompanyInsolvencyHistory
-  description: >-
-    Which of this person's companies have an insolvency record, what kind of case, when, and which
-    practitioners were appointed. Insolvency is a lawful statutory process, not a finding against
-    anyone: a company that cannot pay its debts is SUPPOSED to enter one, and the director who
-    does so is following the law rather than breaking it. A practitioner named here is an
-    appointed professional, not a participant in the company's conduct. Costs one register call
-    per company.
-  params:
-    officerId:
-      type: string
-      description: "The Companies House officer identifier."
-  cypher: |
-    MATCH (o:UkOfficerRecord {officerId: $officerId})-[:HELD_APPOINTMENT]->(a:UkAppointment)
-    WITH DISTINCT a.companyNumber AS companyNumber, a.companyName AS companyName
-    MATCH (c:UkCompany {companyNumber: companyNumber})-[:HAS_INSOLVENCY]->(i:UkInsolvencyRecord)
-    WHERE i.caseTypes IS NOT NULL OR i.insolvencyStatus IS NOT NULL
-    RETURN companyName, companyNumber,
-           i.insolvencyStatus       AS registerStatus,
-           i.caseTypes              AS caseTypes,
-           i.firstCaseDateType      AS firstEventType,
-           i.firstCaseDate          AS firstEventDate,
-           i.firstCasePractitioners AS practitioners,
-           'https://find-and-update.company-information.service.gov.uk/company/'
-             + companyNumber + '/insolvency' AS officialUrl
-    ORDER BY firstEventDate DESC, companyName
 
 - name: SanctionsNameCheck
   description: >-

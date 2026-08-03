@@ -50,18 +50,27 @@ const FIXTURES = {
       officerIds: ['OFFICER_A', 'OFFICER_B'], appointmentsPerRecord: [26, 2],
       addressSnippets: ['11 Example Street, Sampleton', '2 Placeholder Road, Sampleton'] }
   ],
-  CoDirectors: [
-    { officerId: 'OFFICER_X', name: 'BLACKWOOD, Sam', sharedCompanyCount: 3, companiesOverlapped: 2,
-      companiesUndetermined: 1,
-      companies: ['Alpha Holdings Ltd', 'Beta Trading Ltd', 'Historic Works Ltd'],
-      companyNumbers: ['01234567', '02345678', '00098765'],
-      overlapPerCompany: ['overlapped', 'overlapped', 'cannot determine'],
-      rolePerCompany: ['director', 'director', 'secretary'],
+  CompanyOfficersOf: [
+    // One company's board. The app calls this once per company and aggregates.
+    { officerId: 'OFFICER_X', name: 'BLACKWOOD, Sam', officerRole: 'director',
+      appointedOn: '2021-01-01', appointedBefore: null, resignedOn: null, isPre1992Appointment: false,
+      personNumber: '111111110001',
       officialUrl: 'https://find-and-update.company-information.service.gov.uk/officers/OFFICER_X/appointments' },
-    { officerId: 'OFFICER_Y', name: 'CHEN, Robin', sharedCompanyCount: 1, companiesOverlapped: 0,
-      companiesUndetermined: 0, companies: ['Alpha Holdings Ltd'], companyNumbers: ['01234567'],
-      overlapPerCompany: ['did not overlap'], rolePerCompany: ['director'],
+    { officerId: 'OFFICER_Y', name: 'CHEN, Robin', officerRole: 'director',
+      appointedOn: '2005-01-01', appointedBefore: null, resignedOn: '2009-01-01', isPre1992Appointment: false,
+      personNumber: '222222220001',
       officialUrl: 'https://find-and-update.company-information.service.gov.uk/officers/OFFICER_Y/appointments' }
+  ],
+  CompanyProfileOf: [
+    { companyName: 'Alpha Holdings Ltd', companyStatus: 'active', companyStatusDetail: null,
+      companyType: 'ltd', dateOfCreation: '2019-11-04', dateOfCessation: null,
+      sicCodes: ['68209'], registeredOfficePostalCode: 'SW1A 1AA',
+      registeredOfficeLocality: 'Sampleton', hasInsolvencyHistory: false }
+  ],
+  CompanyDissolutionOf: [
+    { mannerOfDissolution: 'voluntary strike-off',
+      registerFilingDescriptions: ['gazette-dissolved-voluntary'],
+      registerFilingTypes: ['GAZ2(A)'], latestFilingDate: '2024-11-05' }
   ],
   BusinessActivities: [
     { sicCode: '68209', activity: 'Other letting & operating of own or leased real estate',
@@ -111,7 +120,12 @@ const FIXTURES = {
     { companyName: 'Historic Works Ltd', companyNumber: '00098765', companyStatus: 'dissolved',
       officerRole: 'secretary', appointedOn: null, appointedBefore: '1992-04-30', startDateBasis: 'before',
       resignedOn: '1998-02-01', currentlyRecorded: false, nameOnRecord: 'AVERY, Dana',
-      companyUrl: 'https://find-and-update.company-information.service.gov.uk/company/00098765' }
+      companyUrl: 'https://find-and-update.company-information.service.gov.uk/company/00098765' },
+    // A third company so a formation cluster (three within the window) can form at all.
+    { companyName: 'Delta Estates Ltd', companyNumber: '04567890', companyStatus: 'dissolved',
+      officerRole: 'director', appointedOn: '2019-12-01', appointedBefore: null, startDateBasis: 'exact',
+      resignedOn: null, currentlyRecorded: true, nameOnRecord: 'AVERY, Dana Kim',
+      companyUrl: 'https://find-and-update.company-information.service.gov.uk/company/04567890' }
   ],
   OfficerCompaniesByStatus: [
     { status: 'dissolved', companies: 9, companyNames: ['Beta Trading Ltd', 'Gamma Services Ltd'],
@@ -258,36 +272,41 @@ async function searchAndSelect(page, which) {
 
   console.log('\n== expensive checks are opt-in ==');
   let calls = await page.evaluate(() => window.__dwCalls.map(c => c.id));
-  check('FormationBurst NOT called on render', calls.indexOf('FormationBurst') === -1, calls.join(','));
-  check('OfficerDissolutionManner NOT called on render', calls.indexOf('OfficerDissolutionManner') === -1);
+  check('company profiles NOT read on render', calls.indexOf('CompanyProfileOf') === -1, calls.join(','));
+  check('company filings NOT read on render', calls.indexOf('CompanyDissolutionOf') === -1);
   await page.click('#btn-formation');
   await page.waitForSelector('#deep-results .dw-obs');
   check('formation cluster renders on request',
-    /8 connected companies were incorporated within 120 days/.test(await page.locator('#deep-results').innerText()));
+    /3 connected companies were incorporated within 120 days/.test(await page.locator('#deep-results').innerText()));
   await page.click('#btn-dissolution');
   await page.waitForSelector('#deep-results table');
   const diss = await page.locator('#deep-results').innerText();
   check('voluntary strike-off distinguished', /voluntary strike-off/.test(diss));
-  check('compulsory strike-off distinguished', /compulsory strike-off/.test(diss));
+  check('one filings read per DISSOLVED company only',
+    (await page.evaluate(() => window.__dwCalls.filter(c => c.id === 'CompanyDissolutionOf').length)) === 2);
   check('dissolution is explained as lawful, not a finding', /normal, lawful way/i.test(diss));
 
   calls = await page.evaluate(() => window.__dwCalls.map(c => c.id));
-  check('CoDirectors NOT called on render', calls.filter(c => c === 'CoDirectors').length === 0);
+  check('company boards NOT read on render', calls.filter(c => c === 'CompanyOfficersOf').length === 0);
   await page.click('#btn-codirectors');
   await page.waitForSelector('#codirectors table');
   const co = await page.locator('#codirectors').innerText();
   check('co-directors listed', /BLACKWOOD, Sam/.test(co) && /CHEN, Robin/.test(co));
+  check('one call per company, not one for the whole person',
+    (await page.evaluate(() => window.__dwCalls.filter(c => c.id === 'CompanyOfficersOf').length)) === 3);
   check('sharing a company at a different time is marked', /not at the same time/.test(co));
   check('an undeterminable overlap says so', /dates unclear/.test(co));
   check('co-appointment is explained as ordinary', /ordinary: partners, family firms/.test(co));
 
-  calls = await page.evaluate(() => window.__dwCalls.map(c => c.id));
-  check('BusinessActivities NOT called on render', calls.filter(c => c === 'BusinessActivities').length === 0);
+  var profileReadsBefore = await page.evaluate(
+    () => window.__dwCalls.filter(c => c.id === 'CompanyProfileOf').length);
   await page.click('#btn-activities');
   await page.waitForSelector('#activities table');
   const act = await page.locator('#activities').innerText();
-  check('activities read in words, not bare codes', /letting & operating of own or leased real estate/.test(act));
-  check('the SIC code is still shown as the source value', /68209/.test(act));
+  check('activities listed by code with their companies', /68209/.test(act));
+  check('activities reads one profile per company, on click only',
+    (await page.evaluate(() => window.__dwCalls.filter(c => c.id === 'CompanyProfileOf').length))
+      - profileReadsBefore === 3);
   check('self-declaration is stated, not glossed over', /SELF-DECLARED/.test(act));
   check('it warns the counts overlap', /add up to more than the number of companies/.test(act));
 
