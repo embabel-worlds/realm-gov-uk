@@ -1,0 +1,46 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" width="64" height="64" role="img" aria-label="UK public registers realm — the Union Flag above a ledger">
+  <!--
+    The Union Flag over a ledger: United Kingdom public records.
+
+    NOT the Royal Arms, and not Parliament's crowned portcullis. Both are
+    restricted — the Royal Arms to the Crown and government, the portcullis a
+    registered mark of the Houses of Parliament — and this realm is a third party
+    READING open registers (Companies House, the Gazette), not an organ of
+    government. An official emblem would claim an authority this realm is at
+    pains not to claim: its own prose insists a search result is a lead and never
+    an identity.
+
+    The Union Flag carries no such restriction. It is drawn simplified — the
+    counterchanged offset of the saltire is below the resolution of a 40px tile
+    and, done badly, reads as a mistake rather than as heraldry.
+
+    The three bars beneath are the register, shared with the Australian realm's
+    tile so the pair reads as a family.
+  -->
+  <defs>
+    <clipPath id="flag">
+      <rect x="11" y="9" width="42" height="28" rx="3"/>
+    </clipPath>
+  </defs>
+
+  <rect width="64" height="64" rx="14" fill="#0a1633"/>
+
+  <g clip-path="url(#flag)">
+    <rect x="11" y="9" width="42" height="28" fill="#012169"/>
+    <!-- Saltire: white first, red laid over it, so the white reads as fimbriation. -->
+    <g stroke-linecap="butt">
+      <path d="M11 9 L53 37 M53 9 L11 37" stroke="#ffffff" stroke-width="9"/>
+      <path d="M11 9 L53 37 M53 9 L11 37" stroke="#c8102e" stroke-width="3.6"/>
+    </g>
+    <!-- Cross of St George, fimbriated: the white band is wider than the red. -->
+    <path d="M32 9 V37 M11 23 H53" stroke="#ffffff" stroke-width="13"/>
+    <path d="M32 9 V37 M11 23 H53" stroke="#c8102e" stroke-width="7.5"/>
+  </g>
+
+  <!-- The register. -->
+  <g fill="#e9edf5">
+    <rect x="16" y="43.5" width="32" height="3.2" rx="1.6"/>
+    <rect x="16" y="49.5" width="24" height="3.2" rx="1.6" opacity=".78"/>
+    <rect x="16" y="55.5" width="14" height="3.2" rx="1.6" opacity=".55"/>
+  </g>
+</svg>

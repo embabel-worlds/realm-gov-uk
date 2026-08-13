@@ -21,6 +21,7 @@ description: >-
 version: "0.1.0"
 author: "Embabel"
 url: https://github.com/embabel/realm-gov-uk
+icon: icon.svg
 tags:
   - government
   - companies-house
