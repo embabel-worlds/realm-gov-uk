@@ -1,0 +1,30 @@
+# The projection view over the phoenix-succession DERIVE rule set (rules/phoenix-succession.yml).
+# Referencing :PhoenixSuccessor is what triggers evaluation, so this view is how the derived
+# label reaches every surface — view_run, apps, the NL layer, world-sql — with no client work.
+# Small and single-purpose, per this realm's drill-down contract.
+
+- name: PhoenixSuccession
+  description: >-
+    Appointments in a phoenix chain: each row is an appointment that followed the same
+    officer's appointment at a company the register NOW records as dissolved, with
+    `dissolvedPredecessors` counting how many such predecessors the chain holds. The default
+    threshold of 2 is deliberate: one dissolved company is ordinary life, and this view shows
+    repetition only. A row states a public-record shape, not wrongdoing — the current company
+    of a flagged officer appears here precisely because it carries the history. Status is the
+    register's current word; appointments without an exact appointment date never participate
+    (pre-1992 records carry only a bound, and a bound is not a date).
+  params:
+    minDepth:
+      type: int
+      default: 2
+      description: "Minimum dissolved predecessors in the chain — 1 shows every successor, 2 (default) shows the repeated pattern only."
+  cypher: |
+    MATCH (p:PhoenixSuccessor)
+    WHERE p.phoenixDepth >= $minDepth
+    RETURN p.officerId AS officerId,
+           p.companyName AS company,
+           p.companyNumber AS companyNumber,
+           p.companyStatus AS currentStatus,
+           p.appointedOn AS appointedOn,
+           p.phoenixDepth AS dissolvedPredecessors
+    ORDER BY p.officerId, p.appointedOn

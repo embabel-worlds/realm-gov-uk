@@ -1,0 +1,50 @@
+# DERIVE rule set: phoenix succession over the officer's own register record.
+#
+# One rule set per file. Requires a host with derived-label rules (embabel/me#1186);
+# an older host ignores this directory entirely, so shipping it is forward-compatible.
+#
+# WHAT THE DATA MUST BE: rules conclude over appointments PRESENT IN THE GRAPH —
+# a watched officer's promoted appointments, not the live register reached through
+# producers on the fly. A world that watches nobody derives nothing, honestly.
+#
+# The register disciplines this rule set inherits, and how:
+#
+#   · Dates have three states. A pre-1992 appointment carries only an upper bound,
+#     and any temporal reasoning must return "unknown", never a guess — so both
+#     rules require `appointedOn`, and a bounded or dateless record can neither
+#     anchor a chain nor extend one. It simply does not participate.
+#   · `companyStatus` is the register's CURRENT word. "Followed an appointment at a
+#     now-dissolved company" is a claim about the register today, not about what
+#     the officer knew or when the dissolution happened — the description says so
+#     and consumers must too.
+#   · No wrongdoing is implied. One dissolved company is ordinary life; the PATTERN
+#     is repetition, which is why `phoenixDepth` counts dissolved predecessors and
+#     the shipped view starts at 2. The label states a public-record shape and
+#     carries its count, nothing more.
+
+name: gov-uk/phoenix-succession
+derives: PhoenixSuccessor
+description: >-
+  An appointment that follows the same officer's appointment at a company the register now
+  records as dissolved. Recursive: a successor whose own company is now dissolved can be
+  followed in turn, and `phoenixDepth` counts the dissolved predecessors in the chain — so
+  one failed company reads as ordinary life and repetition reads as the pattern. Judged
+  against the register's CURRENT company status; appointments without an exact
+  `appointedOn` never participate.
+rules:
+  - derive: "(b:PhoenixSuccessor)"
+    from: |
+      MATCH (a:UkAppointment {companyStatus: 'dissolved'}), (b:UkAppointment)
+      WHERE b.officerId = a.officerId
+        AND b.companyNumber <> a.companyNumber
+        AND a.appointedOn IS NOT NULL AND b.appointedOn IS NOT NULL
+        AND b.appointedOn > a.appointedOn
+  - derive: "(c:PhoenixSuccessor {phoenixDepth: d})"
+    from: |
+      MATCH (b:PhoenixSuccessor), (c:UkAppointment)
+      WHERE c.officerId = b.officerId
+        AND c.companyNumber <> b.companyNumber
+        AND b.companyStatus = 'dissolved'
+        AND b.appointedOn IS NOT NULL AND c.appointedOn IS NOT NULL
+        AND c.appointedOn > b.appointedOn
+      WITH c, max(coalesce(b.phoenixDepth, 1) + 1) AS d
