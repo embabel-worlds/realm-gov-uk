@@ -1,0 +1,55 @@
+# The sector sweep as a named view: the most recently dissolved companies in a SIC code, the
+# people behind them, every one of their register records, and the phoenix-succession DERIVE
+# rule set concluding over all of it — one row per officer, ranked. Where PhoenixSuccession
+# reads appointments already in the graph, this view REACHES the register live through the
+# sector source (sources.yml: ch-company-sector-search), so it costs Companies House calls on a
+# cold run: one for the sector, one per company for its officers, one per officer for their
+# record — ~100 calls at the realm's 2/sec budget for the default 30 companies, then cached.
+#
+# The advanced search returns its companies in no stable order, so the "most recent N" is
+# ordered here by cessation date THEN company number: two runs in one cache window select the
+# same companies. Corporate officers (nominee/formation-agent companies) are excluded so the
+# ranking is people; drop the filter and the longest chains are theirs.
+#
+# A row states a public-record shape, not wrongdoing: a long chain of now-dissolved companies
+# is a pattern worth a look, and nothing more.
+
+- name: PhoenixBySector
+  description: >-
+    Officers of the most recently dissolved companies in a SIC sector, ranked by the longest
+    chain of dissolved predecessors any of their appointments carries (`longestChain`), with
+    how many of their appointments follow a now-dissolved company (`successions`) and how many
+    of those are at companies still active (`liveCompaniesInChain`). Reaches the register live
+    for the sector; the phoenix-succession rules conclude over what it fetched. Excludes
+    corporate officers. Status is the register's current word; pre-1992 appointments never
+    participate.
+  params:
+    sicCode:
+      type: string
+      default: "41201"
+      description: "SIC code of the sector — 41201 is construction of commercial buildings; 41202 domestic; 43xxx the trades."
+    recent:
+      type: int
+      default: 30
+      description: "How many of the sector's most recently dissolved companies to start from. Each costs one officers call plus one call per officer."
+    minDepth:
+      type: int
+      default: 2
+      description: "Rank only officers whose longest chain reaches this many dissolved predecessors — 1 lists everyone with a single dissolved predecessor, 2 (default) the repeated pattern."
+  cypher: |
+    MATCH (s:UkSectorDissolutions {sicCode: $sicCode})-[:FOUND]->(d:UkDissolvedCompany)
+    WITH d ORDER BY d.dateOfCessation DESC, d.companyNumber LIMIT $recent
+    MATCH (c:UkCompany {companyNumber: d.companyNumber})-[:HAS_OFFICER]->(o:UkCompanyOfficer)
+    WITH DISTINCT split(o.officerLink, "/")[2] AS officerId
+    MATCH (r:UkOfficerRecord {officerId: officerId})-[:HELD_APPOINTMENT]->(a:UkAppointment)
+    WITH count(a) AS materialized
+    MATCH (p:PhoenixSuccessor)
+    WHERE NOT p.officerRole STARTS WITH "corporate-"
+    WITH p.officerId AS officerId,
+         p.officerName AS officer,
+         max(p.phoenixDepth) AS longestChain,
+         count(p) AS successions,
+         count(CASE WHEN p.companyStatus = "active" THEN 1 END) AS liveCompaniesInChain
+    WHERE longestChain >= $minDepth
+    RETURN officerId, officer, longestChain, successions, liveCompaniesInChain
+    ORDER BY longestChain DESC, successions DESC, officer
