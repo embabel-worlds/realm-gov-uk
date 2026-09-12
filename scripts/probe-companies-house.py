@@ -274,9 +274,49 @@ def probe_paging(client):
     return ap_echo
 
 
+def probe_advanced_search(client):
+    """What does /advanced-search/companies return, and are its filters honoured?
+
+    This is the one endpoint that answers on a SECTOR axis rather than an identity axis —
+    the only way the register offers to reach "dissolved companies in SIC 41201" without an
+    officer or company number in hand. Every other producer in this realm is one key, one
+    call; this one is one FILTER SET, one call, and the design questions are whether the
+    status and SIC filters are applied server-side (or merely echoed), which fields an item
+    carries, and where the size cap actually lands. Prints field names and company numbers
+    only — public register identifiers, never officer data.
+    """
+    print("\n8. advanced-search — sector axis: are status + SIC filters honoured, what does an item carry?")
+    d = client.get("/advanced-search/companies", sic_codes="41201", company_status="dissolved", size=50)
+    items = (d or {}).get("items", [])
+    hits = (d or {}).get("hits")
+    print(f"   asked size=50: {len(items)} items, hits={hits}, top-level keys={sorted((d or {}).keys())}")
+    if not items:
+        verdict("advanced search answers on the sector axis", False, "no items — endpoint or filters changed")
+        return
+    fields = collections.Counter(k for it in items for k in it.keys())
+    print(f"   item fields (count present of {len(items)}): {dict(fields)}")
+    statuses = collections.Counter(it.get("company_status") for it in items)
+    sic_ok = sum(1 for it in items if "41201" in (it.get("sic_codes") or []))
+    print(f"   statuses: {dict(statuses)} | items carrying SIC 41201: {sic_ok}")
+    print(f"   sample company numbers: {[it.get('company_number') for it in items[:5]]}")
+    verdict("company_status filter is applied server-side", set(statuses) == {"dissolved"},
+            f"statuses seen: {dict(statuses)}")
+    verdict("sic_codes filter is applied server-side", sic_ok == len(items),
+            f"{sic_ok}/{len(items)} items carry the asked code")
+    verdict("an item carries company_number + company_status + date_of_cessation",
+            all(k in fields for k in ("company_number", "company_status", "date_of_cessation")),
+            f"present: {sorted(k for k in ('company_number','company_status','date_of_cessation','date_of_creation','sic_codes') if k in fields)}")
+    big = client.get("/advanced-search/companies", sic_codes="41201", company_status="dissolved", size=5000)
+    n_big = len((big or {}).get("items", []))
+    print(f"   asked size=5000: {n_big} items")
+    verdict("size honoured well beyond 50 (a sector read is one bounded call)", n_big > 50,
+            f"{n_big} items on one call")
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--companies", default=",".join(SAMPLE_COMPANIES))
+    ap.add_argument("--only", help="run one probe by number, e.g. --only 8")
     args = ap.parse_args()
 
     key = os.environ.get("CH_API_KEY")
@@ -290,14 +330,21 @@ def main():
     client = Client(key)
     companies = [c.strip() for c in args.companies.split(",") if c.strip()]
     print("Companies House Phase 0 probe — verdicts against PHASE0-FINDINGS.md\n" + "=" * 66)
+    probes = {
+        "1": lambda: probe_person_number(client, companies),
+        "2": lambda: probe_person_number_stability(client),
+        "3": lambda: probe_appointment_identity(client),
+        "4": lambda: probe_passport_cost(client),
+        "5": lambda: probe_dates(client, companies),
+        "6": lambda: probe_filing_history(client),
+        "7": lambda: probe_paging(client),
+        "8": lambda: probe_advanced_search(client),
+    }
     try:
-        probe_person_number(client, companies)
-        probe_person_number_stability(client)
-        probe_appointment_identity(client)
-        probe_passport_cost(client)
-        probe_dates(client, companies)
-        probe_filing_history(client)
-        probe_paging(client)
+        for number, probe in probes.items():
+            if args.only and number != args.only:
+                continue
+            probe()
     except RateLimited as e:
         print(f"\n429 Too Many Requests — stopping, not retrying. Headers: {e}")
     print("\n" + "=" * 66)

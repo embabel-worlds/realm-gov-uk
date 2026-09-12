@@ -177,3 +177,25 @@ sources:
     sync:
       strategy: live
     visibility: public
+
+  - name: ch-company-sector-search
+    producer: companySectorSearch
+    label: UkDissolvedCompany
+    identityProperty: companyNumber
+    anchor:
+      label: UkSectorDissolutions
+      keyProperty: sicCode
+      edge: FOUND
+    # The one collection here on a SECTOR axis rather than an identity axis. Bounded: one call
+    # returns the page the producer asks for (100), out of tens of thousands the register holds
+    # per code — so it is a seed for a chain, never a census, and views must say so.
+    shape: bounded
+    cardinality: 100
+    partition: sicCode
+    queriedBy: [sicCode]
+    filterableAtSource: [sicCode]
+    ordering: irrelevant
+    updates: business-days
+    sync:
+      strategy: live
+    visibility: public

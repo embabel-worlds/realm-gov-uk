@@ -290,6 +290,49 @@
       producer: officerSearch
       description: Candidate officer records for a name, keyed by the search phrase.
 
+- name: UkSectorDissolutions
+  visibility: internal
+  userAnchor: false
+  description: >-
+    An anchor for one SECTOR read of dissolved companies: pin a SIC code to reach the companies
+    the register now records as dissolved in that activity. The only anchor in this realm that
+    starts from an activity rather than an identifier — the seed for any sweep, and the reason
+    a phoenix-succession question can begin without a name in hand.
+  properties:
+    sicCode:
+      identity: true
+      description: "The SIC code searched, e.g. '41201' (construction of domestic buildings). Identity key."
+
+- name: UkDissolvedCompany
+  visibility: internal
+  userAnchor: false
+  description: >-
+    One dissolved company in a sector read:
+    `MATCH (s:UkSectorDissolutions {sicCode:'41201'})-[:FOUND]->(d:UkDissolvedCompany)`.
+    A BOUNDED SAMPLE, never the sector: the register holds tens of thousands of dissolved
+    companies per code (53,420 for 41201 on 2026-09-11) and one read returns the page the
+    producer asks for, so a count here is the page size, not the sector. Its `companyNumber`
+    is the exact key to seed a `UkCompany` anchor and continue to officers — the chain a sweep
+    is made of.
+  properties:
+    companyNumber:
+      metadata: { identity: "true" }
+      description: "Companies House company number. Identity, and the seed for a UkCompany anchor."
+    sicCode: "The SIC code searched. Echoed from the fetch key."
+    companyName: "The company's name as the register holds it."
+    companyStatus: "The register's CURRENT status — 'dissolved' by construction of this read."
+    companyType: "The register's company type, e.g. 'ltd'."
+    dateOfCreation: "Incorporation date (ISO)."
+    dateOfCessation: "Dissolution date (ISO) — present on this endpoint, absent from the officer-anchored path."
+    locality: "The registered office's locality, as the register renders it."
+  virtualJoins:
+    - anchorLabel: UkSectorDissolutions
+      relationship: FOUND
+      keyField: sicCode
+      recordKeyField: sicCode
+      producer: companySectorSearch
+      description: Dissolved companies in one SIC code, keyed by the code. A bounded page, not the sector.
+
 # ---------------------------------------------------------------------------------------------
 # Seeded reference. Not fetched from anywhere: a small static catalogue, loaded from
 # reference/sic-codes.yml, that turns the bare activity code on a company profile into the

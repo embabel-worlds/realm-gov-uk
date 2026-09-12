@@ -51,6 +51,35 @@ paths:
             application/json:
               schema: { type: object }
 
+  /advanced-search/companies:
+    get:
+      operationId: advancedSearchCompanies
+      summary: >-
+        Companies on a SECTOR axis — the one endpoint that answers without an identifier in
+        hand. Measured 2026-09-11 (probe 8): `sic_codes` and `company_status` are applied
+        server-side, `size` is honoured to 5000 on one call, and every item carries
+        `company_number`, `company_status`, `date_of_creation`, `date_of_cessation` and
+        `sic_codes`. `hits` reports the full match count the page was cut from.
+      parameters:
+        - name: sic_codes
+          in: query
+          description: A SIC code to match; repeatable.
+          schema: { type: string }
+        - name: company_status
+          in: query
+          description: One of the register's status values, e.g. dissolved, active.
+          schema: { type: string }
+        - name: size
+          in: query
+          description: Results to return, up to 5000.
+          schema: { type: integer }
+      responses:
+        "200":
+          description: Matching companies, with `hits` as the total the page was cut from.
+          content:
+            application/json:
+              schema: { type: object }
+
   /officers/{officer_id}/appointments:
     get:
       operationId: officerAppointments

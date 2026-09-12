@@ -246,3 +246,33 @@
     bucket: "companies-house"
     rate: "2/sec"
     yield: medium
+
+- name: companySectorSearch
+  kind: remote
+  operation: advancedSearchCompanies
+  records: "$.items[*]"
+  # The SIC code is the key and the arg. Status is FIXED here rather than pushed from a query
+  # predicate: this collection IS "dissolved companies in a sector" (see UkDissolvedCompany),
+  # and a director web is largely about dissolution. Measured (probe 8): both filters are
+  # applied server-side, so nothing arrives that the register did not already select.
+  keyArg: sic_codes
+  echoKeyAs: sicCode
+  args:
+    company_status: dissolved
+    # A bounded page. The register honours up to 5000 in one call; 100 keeps the downstream
+    # company->officer hop inside the engine's default anchor budget, so a sweep is refused
+    # loudly by the engine rather than silently truncated by us. Raise deliberately.
+    size: 100
+  project:
+    companyNumber: company_number
+    companyName: company_name
+    companyStatus: company_status
+    companyType: company_type
+    dateOfCreation: date_of_creation
+    dateOfCessation: date_of_cessation
+    locality: "registered_office_address.locality"
+  cache: { kind: ttl, seconds: 3600, negativeTtlSeconds: 900 }
+  cost:
+    bucket: "companies-house"
+    rate: "2/sec"
+    yield: high
