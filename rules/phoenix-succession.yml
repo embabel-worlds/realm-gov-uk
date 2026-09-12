@@ -32,6 +32,13 @@ description: >-
   against the register's CURRENT company status; appointments without an exact
   `appointedOn` never participate.
 rules:
+  # Membership and depth are separate rules, and `phoenixDepth` has exactly ONE writer. A
+  # property two rules stamp with different values is last-writer-wins within a round, so a
+  # membership rule that also wrote `phoenixDepth: 1` would reset every deeper chain each
+  # round and the fixpoint would settle at depth 2. Here depth is 1 + the deepest dissolved
+  # PhoenixSuccessor predecessor (0 when there is none) — monotone, and every member carries
+  # it, so `max(phoenixDepth)` over an officer's chain is never null (a null sorts FIRST under
+  # ORDER BY ... DESC and would bury the real leads).
   - derive: "(b:PhoenixSuccessor)"
     from: |
       MATCH (a:UkAppointment {companyStatus: 'dissolved'}), (b:UkAppointment)
@@ -41,10 +48,11 @@ rules:
         AND b.appointedOn > a.appointedOn
   - derive: "(c:PhoenixSuccessor {phoenixDepth: d})"
     from: |
-      MATCH (b:PhoenixSuccessor), (c:UkAppointment)
-      WHERE c.officerId = b.officerId
-        AND c.companyNumber <> b.companyNumber
+      MATCH (c:PhoenixSuccessor)
+      OPTIONAL MATCH (b:PhoenixSuccessor)
+      WHERE b.officerId = c.officerId
+        AND b.companyNumber <> c.companyNumber
         AND b.companyStatus = 'dissolved'
         AND b.appointedOn IS NOT NULL AND c.appointedOn IS NOT NULL
         AND c.appointedOn > b.appointedOn
-      WITH c, max(coalesce(b.phoenixDepth, 1) + 1) AS d
+      WITH c, coalesce(max(b.phoenixDepth), 0) + 1 AS d
