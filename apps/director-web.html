@@ -194,18 +194,24 @@
       <button type="button" class="embabel-button embabel-button--quiet" id="btn-activities">Summarise what these companies do</button>
       <button type="button" class="embabel-button embabel-button--quiet" id="btn-sharedfailures">Find officers who share their failures</button>
     </div>
-    <p class="dw-note">Both checks read one company at a time from the register, so they take longer
-      than the summary above.</p>
+    <p class="dw-note">Each of these reads the register one company at a time, so they take longer
+      than the summary above — the shared-failures check reads six companies and then every officer
+      it finds in them, and half a minute is normal the first time. The page scrolls to the answer
+      and shows progress there while it works.</p>
     <embabel-operation-state id="deep-state"></embabel-operation-state>
     <div id="deep-results"></div>
     <embabel-operation-state id="codirectors-state"></embabel-operation-state>
     <div id="codirectors"></div>
     <embabel-operation-state id="activities-state"></embabel-operation-state>
     <div id="activities"></div>
-    <embabel-operation-state id="chain-state"></embabel-operation-state>
-    <div id="chain"></div>
     <embabel-operation-state id="sharedfailures-state"></embabel-operation-state>
     <div id="sharedfailures"></div>
+    <!-- The succession chain loads with the record rather than on a click, and it is long —
+         about eighty rows for a busy officer. It goes LAST so that the on-demand panels above
+         it stay within reach of the buttons that fill them: with the chain in between, a click
+         wrote its answer three screens below the button and read as doing nothing. -->
+    <embabel-operation-state id="chain-state"></embabel-operation-state>
+    <div id="chain"></div>
   </section>
 
   <section class="dw-card dw-hidden" id="detail-card">
@@ -265,6 +271,16 @@
   }
   function $(id) { return document.getElementById(id); }
   function show(el, on) { el.classList.toggle('dw-hidden', !on); }
+
+  /* Every deep-read button writes into a panel further down the card, and the reads take
+     seconds — one of them takes twenty. Without this the page looks inert for the whole wait
+     and then changes somewhere the reader is not looking, which is indistinguishable from a
+     button that does nothing. Scroll the panel and its progress line into view on the click,
+     before the request starts, so the wait is visibly the app's and not the reader's. */
+  function reveal(id) {
+    var el = $(id + '-state') || $(id);
+    if (el && el.scrollIntoView) el.scrollIntoView({ behavior: 'smooth', block: 'center' });
+  }
   function num(v) { return typeof v === 'number' ? v.toLocaleString('en-GB') : escapeHtml(v); }
 
   /** Rows for a view come back as a bare array under the envelope's `data`. */
@@ -317,7 +333,7 @@
   var selected = null;                  // { officerId, name }
   var appointmentsForSelected = [];     // this record's appointments, for the per-company loops
   var COMPANY_EXPANSION_CAP = 12;
-  var SHARED_FAILURE_SEED_CAP = 6;      // each seed company costs an officer list plus their records       // each company is a separate read of the register
+  var SHARED_FAILURE_SEED_CAP = 6;      // each seed company costs an officer list plus their records
 
   function partialNote(n) {
     return '<div class="dw-caution"><strong>Partial.</strong> ' + n + ' compan' +
@@ -733,20 +749,30 @@
 
   // Expensive: one register call per company. Explicit, never automatic.
   $('btn-formation').addEventListener('click', function () {
-    if (selected) loadFormationBurst(selected.officerId);
+    if (!selected) return;
+    reveal('deep');
+    loadFormationBurst(selected.officerId);
   });
   $('btn-dissolution').addEventListener('click', function () {
-    if (selected) loadDissolutionManner(selected.officerId);
+    if (!selected) return;
+    reveal('deep');
+    loadDissolutionManner(selected.officerId);
   });
   $('btn-sharedfailures').addEventListener('click', function () {
-    if (selected) loadSharedFailures();
+    if (!selected) return;
+    reveal('sharedfailures');
+    loadSharedFailures();
   });
 
   $('btn-codirectors').addEventListener('click', function () {
-    if (selected) loadCoDirectors(selected.officerId);
+    if (!selected) return;
+    reveal('codirectors');
+    loadCoDirectors(selected.officerId);
   });
   $('btn-activities').addEventListener('click', function () {
-    if (selected) loadActivities(selected.officerId);
+    if (!selected) return;
+    reveal('activities');
+    loadActivities(selected.officerId);
   });
 
   // One register call PER COMPANY, on request only — same reason as the co-director loop.
