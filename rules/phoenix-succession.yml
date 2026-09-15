@@ -24,6 +24,12 @@
 
 name: gov-uk/phoenix-succession
 derives: PhoenixSuccessor
+# Declared so the schema — and every surface typed from it, world-sql's columns above all — knows
+# the depth is a number before any evaluation runs. Ordered as text, "8" sorts above "20".
+properties:
+  phoenixDepth:
+    type: int
+    description: "How many now-dissolved companies precede this appointment in the officer's chain; 1 is one failure, 2 and up is the pattern."
 description: >-
   An appointment that follows the same officer's appointment at a company the register now
   records as dissolved. Recursive: a successor whose own company is now dissolved can be

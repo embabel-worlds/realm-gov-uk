@@ -1,0 +1,60 @@
+# A derived EDGE between officers, from the appointments the register already publishes.
+#
+# WHY THIS NEEDS A RULE AT ALL, since the answer is not obvious.
+#
+# Companies House publishes no relationship between two officers. It publishes appointments,
+# and two officers are connected only in the sense that a THIRD thing — a company — appears in
+# both their records. There is no edge to traverse, so `*1..n` has nothing to walk: this is not
+# reachability over an existing path, it is an edge whose EXISTENCE is a conclusion, computed
+# from a count that crosses a threshold. That is precisely what a derived relationship is for,
+# and it is the one shape a traversal cannot express.
+#
+# WHAT THE EDGE MEANS, exactly. `(a)-[:SHARED_FAILURES]->(b)` says: a and b each held an
+# appointment at two or more of the SAME companies, and the register now records those companies
+# as dissolved. It does not say they know each other, worked together, overlapped in time, or
+# did anything wrong. Directors of the same large group share dozens of dissolved subsidiaries
+# entirely ordinarily, and a professional liquidator or a formation agent shares them with half
+# the register. `companies` carries the count so a reader can judge, and the shipped view starts
+# at 3 because 2 is common enough to be noise.
+#
+# NO TIME OVERLAP IS ASSERTED. Two officers can appear at the same dissolved company a decade
+# apart. Testing overlap needs appointedOn AND resignedOn on both sides, resignedOn is absent for
+# a serving officer, and the realm's date discipline says an absent date is unknown rather than
+# open-ended — so the honest edge is "both appear in this company's history", and a consumer who
+# needs contemporaneity must say so and check it.
+#
+# THE FACTS ARE COMPLETE, which is why this rule set declares no `requires:`. One officer-record
+# fetch returns that officer's ENTIRE appointment history, so every officer the query materialised
+# brings their whole set with them. The conclusions are bounded by WHICH officers were fetched,
+# never by how much of each officer was fetched — and that bound is the query's to choose.
+
+name: gov-uk/officer-web
+derives: SHARED_FAILURES
+description: >-
+  Two officers who each held an appointment at two or more of the same companies that the register
+  now records as dissolved. An edge the register does not publish, computed from appointments it
+  does. `companies` counts the shared dissolved companies. This is a public-record shape and not a
+  finding: a shared corporate group, a liquidator or a formation agent all produce it in volume,
+  and no time overlap between the two appointments is asserted or checked.
+properties:
+  companies:
+    type: int
+    description: "How many now-dissolved companies both officers held an appointment at. 2 is common; the shipped view starts at 3."
+# Pairs are quadratic in the officers materialised, and every pair is written. A sector sweep of
+# thirty companies reaches ~65 officers, so a few thousand pairs is the expected order; tripping
+# this means the query anchored far wider than a person can read, not that the estate is dense.
+maxPairs: 50000
+rules:
+  # The endpoints are the OFFICER RECORDS, not the appointments: the count has to group by the
+  # pair of people, and two appointment nodes share exactly one company between them by
+  # definition. Grouping on the appointments instead would give every pair `companies: 1` and a
+  # threshold that never fires — syntactically valid, semantically empty, and invisible to the
+  # validator.
+  - derive: "(oa)-[:SHARED_FAILURES {companies: n}]->(ob)"
+    from: |
+      MATCH (oa:UkOfficerRecord)-[:HELD_APPOINTMENT]->(a:UkAppointment {companyStatus: 'dissolved'})
+      MATCH (ob:UkOfficerRecord)-[:HELD_APPOINTMENT]->(b:UkAppointment {companyStatus: 'dissolved'})
+      WHERE a.companyNumber = b.companyNumber
+        AND oa.officerId < ob.officerId
+      WITH oa, ob, count(DISTINCT a.companyNumber) AS n
+      WHERE n >= 2

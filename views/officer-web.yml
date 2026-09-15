@@ -1,0 +1,51 @@
+# The officer web (rules/officer-web.yml) as a named view.
+#
+# Reading this responsibly is the whole design of the file, so the description says the same
+# three things the rule set does, in the place a consumer will actually see them: the edge is a
+# public-record shape and not a finding, no time overlap is asserted, and a shared corporate
+# group or a professional liquidator produces these in volume.
+#
+# The default threshold is 3 rather than 2. Two shared dissolved companies is common enough to
+# be noise — one small group with two subsidiaries that wound up produces it for every pair of
+# its directors — and a list that opens on noise trains its reader to skim.
+
+- name: OfficerWeb
+  description: >-
+    Pairs of officers who each held an appointment at three or more of the same companies the
+    register now records as dissolved, among the officers this query reached. An edge Companies
+    House does not publish: the register records appointments, and two officers are connected
+    only in the sense that the same company appears in both their records.
+
+    NOT A FINDING, and the count is there so a reader can judge. Directors of one corporate group
+    share every subsidiary that wound up; an insolvency practitioner or a formation agent shares
+    dozens with half the register; a long career produces more than a short one. What the number
+    distinguishes is degree, not intent.
+
+    NO TIME OVERLAP IS ASSERTED. Two officers can appear in the same dissolved company's history a
+    decade apart. Testing contemporaneity needs both appointment dates and both resignation dates,
+    and a serving officer has no resignation date — which this realm treats as unknown rather than
+    open-ended. If overlap matters to the question, check it; do not assume this edge implies it.
+
+    COVERAGE IS THE QUERY'S. Pairs are computed among the officers materialised by whatever
+    anchored this run, so the web is bounded by who was reached and never by how much of each
+    officer was read — one fetch returns an officer's entire appointment history. Widening the
+    anchor widens the web.
+  params:
+    minShared:
+      type: int
+      default: 3
+      description: "Shared dissolved companies required to report a pair. 2 is common enough to be noise; raise it to find the densest connections."
+  cypher: |
+    MATCH (a:UkOfficerRecord)-[s:SHARED_FAILURES]->(b:UkOfficerRecord)
+    WHERE s.companies >= $minShared
+    OPTIONAL MATCH (a)-[:HELD_APPOINTMENT]->(an:UkAppointment)
+    OPTIONAL MATCH (b)-[:HELD_APPOINTMENT]->(bn:UkAppointment)
+    WITH a, b, s,
+         head(collect(DISTINCT an.officerName)) AS officerA,
+         head(collect(DISTINCT bn.officerName)) AS officerB
+    RETURN officerA,
+           officerB,
+           a.officerId AS officerAId,
+           b.officerId AS officerBId,
+           s.companies AS sharedDissolvedCompanies
+    ORDER BY sharedDissolvedCompanies DESC, officerA, officerB
