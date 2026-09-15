@@ -1,0 +1,90 @@
+# The two DERIVE conclusions, ANCHORED ON ONE OFFICER — the shape an app can actually call.
+#
+# WHY THESE EXIST BESIDE PhoenixSuccession AND OfficerWeb, which look like the same questions.
+# Those two open with `MATCH (p:PhoenixSuccessor)` and conclude over whatever the surrounding
+# query already materialised. That is right for a chained query that brought its own facts (see
+# PhoenixBySector) and useless to a caller that has not: a rule body cannot fetch, so an
+# unanchored view run in its own query concludes over an empty graph and returns nothing —
+# truthfully, and unhelpfully.
+#
+# So each view here FETCHES FIRST and concludes second. The leading MATCHes are not filters; they
+# are the materialisation, and the rules run over what they brought in.
+
+- name: OfficerPhoenixChain
+  description: >-
+    This officer's appointments that follow their own appointment at a company the register NOW
+    records as dissolved, with `dissolvedPredecessors` counting how many such predecessors the
+    chain holds. One failed company is ordinary; the default threshold of 2 shows repetition only.
+
+    A row states a public-record shape, never wrongdoing — and note that a CURRENT company of a
+    flagged officer appears here precisely because it carries the history behind it. Status is the
+    register's word today. Appointments without an exact date never participate: a pre-1992 record
+    gives only an upper bound, and a bound is not a date.
+
+    Cost is one read of this officer's record, which the passport has usually already paid for.
+  params:
+    officerId:
+      type: string
+      description: "Companies House officer identifier — the one the appointments URL carries."
+    minDepth:
+      type: int
+      default: 2
+      description: "Dissolved predecessors required to report an appointment. 1 shows every successor; 2 shows the pattern."
+  cypher: |
+    MATCH (r:UkOfficerRecord {officerId: $officerId})-[:HELD_APPOINTMENT]->(a:UkAppointment)
+    WITH count(a) AS appointmentsRead
+    MATCH (p:PhoenixSuccessor)
+    WHERE p.officerId = $officerId AND p.phoenixDepth >= $minDepth
+    RETURN p.companyName AS company,
+           p.companyNumber AS companyNumber,
+           p.companyStatus AS currentStatus,
+           p.appointedOn AS appointedOn,
+           p.resignedOn AS resignedOn,
+           p.phoenixDepth AS dissolvedPredecessors
+    ORDER BY dissolvedPredecessors DESC, appointedOn
+
+- name: OfficerSharedFailures
+  description: >-
+    Officers who appear alongside one another at several of the same now-dissolved companies. An
+    edge Companies House does not publish: the register records appointments, and two officers are
+    connected only because the same company appears in both records.
+
+    NOT A FINDING. Directors of one corporate group share every subsidiary that wound up; a
+    formation agent or an insolvency practitioner shares dozens with half the register — expect
+    corporate officers near the top of this list for exactly that reason. The count distinguishes
+    degree, never intent. And NO time overlap is asserted: two officers can appear in the same
+    company's history a decade apart, and a serving officer has no resignation date to check it
+    against.
+
+    TAKES COMPANY NUMBERS, NOT AN OFFICER, and that is a constraint rather than a preference. A
+    query that binds `UkOfficerRecord` before fanning out marks that label materialized, so the
+    fan-out to OTHER officers becomes a semijoin against what is already present and fetches
+    nobody — the caller would get one officer back and no error. Seeding from the companies keeps
+    the officer label unbound until the fan-out, which is what makes it a real fetch. Pass the
+    dissolved companies you already know about: an app that has listed an officer's appointments
+    has them for free.
+
+    COST is one officer-list read per company plus one appointments read per officer found, so it
+    grows with the number of companies passed. Pass a handful.
+  params:
+    companyNumbers:
+      type: string
+      description: "Comma-separated Companies House numbers of DISSOLVED companies to fan out from, e.g. `SC417296,SC352135`. Keep it short: each one costs reads."
+    minShared:
+      type: int
+      default: 3
+      description: "Shared dissolved companies required to report a pair. 2 is common enough to be noise."
+  cypher: |
+    UNWIND split($companyNumbers, ",") AS companyNumber
+    MATCH (c:UkCompany {companyNumber: companyNumber})-[:HAS_OFFICER]->(o:UkCompanyOfficer)
+    WITH DISTINCT split(o.officerLink, "/")[2] AS officerId
+    MATCH (r:UkOfficerRecord {officerId: officerId})-[:HELD_APPOINTMENT]->(a:UkAppointment)
+    WITH count(a) AS appointmentsRead
+    MATCH (x:UkOfficerRecord)-[s:SHARED_FAILURES]->(y:UkOfficerRecord)
+    WHERE s.companies >= $minShared
+    RETURN s.fromName AS officerA,
+           s.toName AS officerB,
+           x.officerId AS officerAId,
+           y.officerId AS officerBId,
+           s.companies AS sharedDissolvedCompanies
+    ORDER BY sharedDissolvedCompanies DESC, officerA

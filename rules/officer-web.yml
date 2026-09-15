@@ -40,6 +40,12 @@ properties:
   companies:
     type: int
     description: "How many now-dissolved companies both officers held an appointment at. 2 is common; the shipped view starts at 3."
+  fromName:
+    type: string
+    description: "The `from` officer's name as the register spells it on their appointments. Carried ON THE EDGE because a UkOfficerRecord holds only an identifier, and a consumer reaching this edge cannot traverse back to the appointments to find a name: the record is bound through the derived relationship, not through a registered anchor, so the engine refuses the hop. Stamping it here is what makes the edge readable on its own."
+  toName:
+    type: string
+    description: "The `to` officer's name, carried for the same reason as fromName."
 # Pairs are quadratic in the officers materialised, and every pair is written. A sector sweep of
 # thirty companies reaches ~65 officers, so a few thousand pairs is the expected order; tripping
 # this means the query anchored far wider than a person can read, not that the estate is dense.
@@ -50,11 +56,14 @@ rules:
   # definition. Grouping on the appointments instead would give every pair `companies: 1` and a
   # threshold that never fires — syntactically valid, semantically empty, and invisible to the
   # validator.
-  - derive: "(oa)-[:SHARED_FAILURES {companies: n}]->(ob)"
+  - derive: "(oa)-[:SHARED_FAILURES {companies: n, fromName: aName, toName: bName}]->(ob)"
     from: |
       MATCH (oa:UkOfficerRecord)-[:HELD_APPOINTMENT]->(a:UkAppointment {companyStatus: 'dissolved'})
       MATCH (ob:UkOfficerRecord)-[:HELD_APPOINTMENT]->(b:UkAppointment {companyStatus: 'dissolved'})
       WHERE a.companyNumber = b.companyNumber
         AND oa.officerId < ob.officerId
-      WITH oa, ob, count(DISTINCT a.companyNumber) AS n
+      WITH oa, ob,
+           count(DISTINCT a.companyNumber) AS n,
+           head(collect(DISTINCT a.officerName)) AS aName,
+           head(collect(DISTINCT b.officerName)) AS bName
       WHERE n >= 2

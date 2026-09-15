@@ -8,7 +8,7 @@
 <link rel="stylesheet" href="/api/v1/apps-runtime/v1/theme.css">
 <script src="/api/v1/apps-runtime/v1/embabel.js"></script>
 <script type="application/embabel-app+json">
-{"version":1,"name":"director-web","requires":{"lenses":[],"views":["OfficerSearchCandidates","OfficerPassport","OfficerAppointments","OfficerCompaniesByStatus","OfficerTimeline","PossibleSamePersonRecords","CompanyOfficersOf","CompanyProfileOf","CompanyDissolutionOf","ManyAppointments","SynchronousRoleChanges"],"realms":["gov-uk"],"namespaces":[]}}
+{"version":1,"name":"director-web","requires":{"lenses":[],"views":["OfficerSearchCandidates","OfficerPassport","OfficerAppointments","OfficerCompaniesByStatus","OfficerTimeline","PossibleSamePersonRecords","CompanyOfficersOf","CompanyProfileOf","CompanyDissolutionOf","ManyAppointments","SynchronousRoleChanges","OfficerPhoenixChain","OfficerSharedFailures"],"realms":["gov-uk"],"namespaces":[]}}
 </script>
 <style>
   /* Rides the v1 theme tokens and recolours only the accent pair, so shared components stay
@@ -192,6 +192,7 @@
       <button type="button" class="embabel-button embabel-button--quiet" id="btn-dissolution">Check how dissolved companies were closed</button>
       <button type="button" class="embabel-button embabel-button--quiet" id="btn-codirectors">Find who they sit on boards with</button>
       <button type="button" class="embabel-button embabel-button--quiet" id="btn-activities">Summarise what these companies do</button>
+      <button type="button" class="embabel-button embabel-button--quiet" id="btn-sharedfailures">Find officers who share their failures</button>
     </div>
     <p class="dw-note">Both checks read one company at a time from the register, so they take longer
       than the summary above.</p>
@@ -201,6 +202,10 @@
     <div id="codirectors"></div>
     <embabel-operation-state id="activities-state"></embabel-operation-state>
     <div id="activities"></div>
+    <embabel-operation-state id="chain-state"></embabel-operation-state>
+    <div id="chain"></div>
+    <embabel-operation-state id="sharedfailures-state"></embabel-operation-state>
+    <div id="sharedfailures"></div>
   </section>
 
   <section class="dw-card dw-hidden" id="detail-card">
@@ -304,12 +309,15 @@
     activities: runnerFor('activities-state'),
     appointments: runnerFor('appointments-state'),
     statuses: runnerFor('statuses-state'),
-    timeline: runnerFor('timeline-state')
+    timeline: runnerFor('timeline-state'),
+    chain: runnerFor('chain-state'),
+    sharedfailures: runnerFor('sharedfailures-state')
   };
 
   var selected = null;                  // { officerId, name }
   var appointmentsForSelected = [];     // this record's appointments, for the per-company loops
-  var COMPANY_EXPANSION_CAP = 12;       // each company is a separate read of the register
+  var COMPANY_EXPANSION_CAP = 12;
+  var SHARED_FAILURE_SEED_CAP = 6;      // each seed company costs an officer list plus their records       // each company is a separate read of the register
 
   function partialNote(n) {
     return '<div class="dw-caution"><strong>Partial.</strong> ' + n + ' compan' +
@@ -492,6 +500,8 @@
     $('deep-results').innerHTML = '';
     $('codirectors').innerHTML = '';
     $('activities').innerHTML = '';
+    $('chain').innerHTML = '';
+    $('sharedfailures').innerHTML = '';
     appointmentsForSelected = [];
     show($('passport-card'), true);
     show($('observations-card'), true);
@@ -503,6 +513,102 @@
     loadAppointments(officerId);
     loadStatuses(officerId);
     loadTimeline(officerId);
+    loadChain(officerId);
+  }
+
+  /* ── the two DERIVE conclusions ────────────────────────────────────────────────────────────
+     These differ from every other panel in one way worth understanding: the answer is not a row
+     the register holds, it is a conclusion a rule set reached over rows the register holds. Both
+     views fetch before they conclude — a rule cannot fetch for itself — so the leading reads in
+     their Cypher are the materialisation, not a filter.
+
+     The engine says when a conclusion rests on facts it knows were incomplete, and that warning
+     arrives through the same envelope as any other, so warningHtml() surfaces it unchanged. When
+     it appears, the counts below are a floor. */
+
+  async function loadChain(officerId) {
+    $('chain').innerHTML = '';
+    try {
+      var env = await runners.chain.view('OfficerPhoenixChain',
+        { officerId: officerId, minDepth: 2 },
+        { expectation: 'Following this record for appointments that repeatedly succeed dissolved companies.' });
+      if (!env) return;
+      var rows = rowsOf(env);
+      if (!rows.length) {
+        $('chain').innerHTML = '<h3 class="dw-h3">Succession chain</h3>' +
+          '<p class="dw-empty">No appointment here follows two or more of this record\u2019s own ' +
+          'dissolved companies. One failed company is ordinary, and this looks for repetition.</p>';
+        return;
+      }
+      var body = rows.map(function (r) {
+        return '<tr><td>' + companyLink(r.companyNumber, r.company) + '</td>' +
+          '<td>' + escapeHtml(r.currentStatus || '') + '</td>' +
+          '<td>' + escapeHtml(r.appointedOn || 'Not dated') + '</td>' +
+          '<td>' + num(r.dissolvedPredecessors) + '</td></tr>';
+      }).join('');
+      $('chain').innerHTML = '<h3 class="dw-h3">Succession chain</h3>' +
+        '<p class="dw-sub">Appointments this record took up <em>after</em> its own appointment at a ' +
+        'company the register now records as dissolved. The count is how many such predecessors the ' +
+        'chain holds \u2014 one failure is ordinary life, and repetition is what this shows. A company ' +
+        'that is still active appears here precisely because it carries that history behind it; ' +
+        'nothing on this table says anyone did anything wrong.</p>' +
+        warningHtml(env) +
+        '<table class="dw-table"><thead><tr><th>Company</th><th>Status now</th>' +
+        '<th>Appointed</th><th>Dissolved predecessors</th></tr></thead><tbody>' + body + '</tbody></table>';
+    } catch (e) { /* the runner has already reported it in chain-state */ }
+  }
+
+  async function loadSharedFailures() {
+    $('sharedfailures').innerHTML = '';
+    /* Seeded with COMPANY NUMBERS, not this officer's id, and that is a constraint of the engine
+       rather than a preference: a query that binds UkOfficerRecord before fanning out marks the
+       label materialized, so the fan-out to OTHER officers becomes a semijoin against what is
+       already present and fetches nobody — one officer back, no error. The appointments panel has
+       already paid for this record, so the dissolved company numbers are free here. */
+    var dissolved = appointmentsForSelected
+      .filter(function (a) { return a.companyStatus === 'dissolved' && a.companyNumber; })
+      .map(function (a) { return a.companyNumber; });
+    dissolved = dissolved.filter(function (n, i) { return dissolved.indexOf(n) === i; })
+      .sort().slice(0, SHARED_FAILURE_SEED_CAP);
+    if (!dissolved.length) {
+      $('sharedfailures').innerHTML = '<h3 class="dw-h3">Shared failures</h3>' +
+        '<p class="dw-empty">This record holds no dissolved companies, so there is nothing to ' +
+        'share.</p>';
+      return;
+    }
+    try {
+      var env = await runners.sharedfailures.view('OfficerSharedFailures',
+        { companyNumbers: dissolved.join(','), minShared: 3 },
+        { expectation: 'Reading each dissolved company\u2019s officers, then each of those officers\u2019 records.' });
+      if (!env) return;
+      var rows = rowsOf(env);
+      var intro = '<h3 class="dw-h3">Shared failures</h3>' +
+        '<p class="dw-sub">Officers who appear alongside one another at three or more of the same ' +
+        'now-dissolved companies, among the ' + dissolved.length + ' compan' +
+        (dissolved.length === 1 ? 'y' : 'ies') + ' read. Companies House publishes no link between ' +
+        'two people \u2014 this is computed from the appointments it does publish.</p>' +
+        '<div class="dw-caution"><strong>Read this as degree, not intent.</strong> Directors of one ' +
+        'corporate group share every subsidiary that wound up, and a formation agent or insolvency ' +
+        'practitioner shares dozens with half the register \u2014 expect corporate officers near the ' +
+        'top for exactly that reason. No overlap in time is claimed: two officers can appear in the ' +
+        'same company\u2019s history a decade apart.</div>' + warningHtml(env);
+      if (!rows.length) {
+        $('sharedfailures').innerHTML = intro +
+          '<p class="dw-empty">No pair among the officers read shares three or more dissolved ' +
+          'companies.</p>';
+        return;
+      }
+      var body = rows.map(function (r) {
+        return '<tr><td>' + escapeHtml(r.officerA || 'Name not recorded') + ' ' +
+          link(CH + '/officers/' + encodeURIComponent(r.officerAId) + '/appointments', '\u2197') + '</td>' +
+          '<td>' + escapeHtml(r.officerB || 'Name not recorded') + ' ' +
+          link(CH + '/officers/' + encodeURIComponent(r.officerBId) + '/appointments', '\u2197') + '</td>' +
+          '<td>' + num(r.sharedDissolvedCompanies) + '</td></tr>';
+      }).join('');
+      $('sharedfailures').innerHTML = intro +
+        '<table class="dw-table"><thead><tr><th>Officer</th><th>Officer</th>' +
+        '<th>Shared dissolved companies</th></tr></thead><tbody>' + body + '</tbody></table>';
+    } catch (e) { /* reported in sharedfailures-state */ }
   }
 
   async function loadPassport(officerId) {
@@ -632,6 +738,10 @@
   $('btn-dissolution').addEventListener('click', function () {
     if (selected) loadDissolutionManner(selected.officerId);
   });
+  $('btn-sharedfailures').addEventListener('click', function () {
+    if (selected) loadSharedFailures();
+  });
+
   $('btn-codirectors').addEventListener('click', function () {
     if (selected) loadCoDirectors(selected.officerId);
   });
