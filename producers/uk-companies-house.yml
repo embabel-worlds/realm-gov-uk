@@ -62,6 +62,9 @@
     nationality: nationality
     occupation: occupation
     countryOfResidence: country_of_residence
+  # The endpoint's one filter, `filter=active`, means "no resignation recorded", which no
+  # comparison on a property can ask for; every WHERE is applied after the one-page read.
+  pushdown: []
   cache: { kind: ttl, seconds: 3600, negativeTtlSeconds: 900 }
   cost:
     bucket: "companies-house"
@@ -96,6 +99,8 @@
     registeredOfficePostalCode: "registered_office_address.postal_code"
     hasInsolvencyHistory: has_insolvency_history
     hasCharges: has_charges
+  # A single record by company number: there is nothing left to filter at the source.
+  pushdown: []
   cache: { kind: ttl, seconds: 21600, negativeTtlSeconds: 3600 }
   cost:
     bucket: "companies-house"
@@ -129,6 +134,9 @@
     resignedOn: resigned_on
     nationality: nationality
     occupation: occupation
+  # The endpoint filters only by register view/type, which no property here carries; officers
+  # come back whole (one call, up to 500) and the graph applies every WHERE.
+  pushdown: []
   cache: { kind: ttl, seconds: 3600, negativeTtlSeconds: 900 }
   cost:
     bucket: "companies-house"
@@ -155,6 +163,8 @@
     nationality: nationality
     countryOfResidence: country_of_residence
   # A company with no PSCs is a common, legitimate answer — cache it as firmly as a positive one.
+  # The endpoint takes no filter beyond paging; the graph applies every WHERE.
+  pushdown: []
   cache: { kind: ttl, seconds: 21600, negativeTtlSeconds: 21600 }
   cost:
     bucket: "companies-house"
@@ -183,6 +193,9 @@
     # whether a strike-off was voluntary — company_status never does.
     filingDescription: description
     filingDate: date
+  # `category` is the endpoint's only filter and it is FIXED above: this door IS the gazette and
+  # dissolution filings. Nothing a query says narrows it further at the source.
+  pushdown: []
   cache: { kind: ttl, seconds: 21600, negativeTtlSeconds: 21600 }
   cost:
     bucket: "companies-house"
@@ -215,6 +228,8 @@
     dateOfBirthYear: "date_of_birth.year"
     addressSnippet: address_snippet
     description: description
+  # The phrase is the key; the search endpoint takes no other filter.
+  pushdown: []
   cache: { kind: ttl, seconds: 900, negativeTtlSeconds: 900 }
   cost:
     bucket: "companies-house"
@@ -241,6 +256,8 @@
     firstCaseDateType: "cases.0.dates.0.type"
     firstCaseDate: "cases.0.dates.0.date"
     firstCasePractitioners: "cases.0.practitioners[*].name"
+  # One record per company by number: nothing left to filter at the source.
+  pushdown: []
   cache: { kind: ttl, seconds: 21600, negativeTtlSeconds: 21600 }
   cost:
     bucket: "companies-house"
@@ -263,6 +280,23 @@
     # company->officer hop inside the engine's default anchor budget, so a sweep is refused
     # loudly by the engine rather than silently truncated by us. Raise deliberately.
     size: 100
+  # Every rule below was measured against the live register (2026-11-25): with and without the
+  # filter, hits differ (sic 56101 dissolved: 78,348 → company_type=ltd 78,057; dissolved_from
+  # 2025-01-01 17,842; plus dissolved_to 2025-01-31 624; incorporated_from 2024-01-01 6,840), and
+  # both date bounds are inclusive of the day named. Strict bounds ride the same inclusive
+  # parameter: the register then returns a superset and the graph keeps the exact rows.
+  # company_type is gated by valuePattern to the register's own type codes, because an unknown
+  # type is a 400 for the whole read, not an empty page: anything else stays a graph filter.
+  pushdown:
+    - { property: companyType, op: EQUALS, argPath: company_type, clause: "{value}", valuePattern: '^(private-unlimited|ltd|plc|old-public-company|private-limited-guarant-nsc-limited-exemption|limited-partnership|private-limited-guarant-nsc|converted-or-closed|private-unlimited-nsc|private-limited-shares-section-30-exemption|protected-cell-company|assurance-company|oversea-company|eeig-establishment|icvc-securities|icvc-warrant|icvc-umbrella|registered-society-non-jurisdictional|industrial-and-provident-society|northern-ireland|northern-ireland-other|llp|royal-charter|investment-company-with-variable-capital|unregistered-company|other|european-public-limited-liability-company-se|united-kingdom-societas|uk-establishment|scottish-partnership|charitable-incorporated-organisation|scottish-charitable-incorporated-organisation|further-education-or-sixth-form-college-corporation|eeig|ukeig|registered-overseas-entity)$' }
+    - { property: dateOfCessation, op: GREATER_THAN_OR_EQUAL, argPath: dissolved_from, clause: "{value}", valuePattern: '^(\d{4}-\d{2}-\d{2})' }
+    - { property: dateOfCessation, op: GREATER_THAN, argPath: dissolved_from, clause: "{value}", valuePattern: '^(\d{4}-\d{2}-\d{2})' }
+    - { property: dateOfCessation, op: LESS_THAN_OR_EQUAL, argPath: dissolved_to, clause: "{value}", valuePattern: '^(\d{4}-\d{2}-\d{2})' }
+    - { property: dateOfCessation, op: LESS_THAN, argPath: dissolved_to, clause: "{value}", valuePattern: '^(\d{4}-\d{2}-\d{2})' }
+    - { property: dateOfCreation, op: GREATER_THAN_OR_EQUAL, argPath: incorporated_from, clause: "{value}", valuePattern: '^(\d{4}-\d{2}-\d{2})' }
+    - { property: dateOfCreation, op: GREATER_THAN, argPath: incorporated_from, clause: "{value}", valuePattern: '^(\d{4}-\d{2}-\d{2})' }
+    - { property: dateOfCreation, op: LESS_THAN_OR_EQUAL, argPath: incorporated_to, clause: "{value}", valuePattern: '^(\d{4}-\d{2}-\d{2})' }
+    - { property: dateOfCreation, op: LESS_THAN, argPath: incorporated_to, clause: "{value}", valuePattern: '^(\d{4}-\d{2}-\d{2})' }
   project:
     companyNumber: company_number
     companyName: company_name

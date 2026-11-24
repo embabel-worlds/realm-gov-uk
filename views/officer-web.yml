@@ -11,6 +11,7 @@
 
 - name: OfficerWeb
   description: >-
+    Officer pairs sharing three or more now-dissolved companies.
     Pairs of officers who each held an appointment at three or more of the same companies the
     register now records as dissolved, among the officers this query reached. An edge Companies
     House does not publish: the register records appointments, and two officers are connected

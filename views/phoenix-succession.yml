@@ -5,6 +5,7 @@
 
 - name: PhoenixSuccession
   description: >-
+    Appointments that follow the same officer's now-dissolved company.
     Appointments in a phoenix chain: each row is an appointment that followed the same
     officer's appointment at a company the register NOW records as dissolved, with
     `dissolvedPredecessors` counting how many such predecessors the chain holds. The default

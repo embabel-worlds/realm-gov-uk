@@ -25,6 +25,7 @@
 
 - name: CompanyOfficersOf
   description: >-
+    Every officer the register lists against one company, with dates.
     Every officer the register lists against ONE company, with their dates and their own officer
     identifier. This is the building block of the co-director web: call it for each company a
     person sits on and the people who recur are the ones they work alongside. Two people listed on
@@ -32,6 +33,7 @@
     actually overlapped — never the mere fact of appearing together.
   params:
     companyNumber:
+      required: true
       type: string
       description: "The Companies House company number."
   cypher: |
@@ -49,11 +51,13 @@
 
 - name: CompanyProfileOf
   description: >-
+    One company's register profile: status, type, dates, SIC, office.
     ONE company's register profile — incorporation date, precise status, declared activity codes
     and registered office. Incorporation dates are what a formation-cluster reading needs, and
-    activity codes are self-declared and often left at a broad default.
+    activity codes are self-declared and often left at a broad default. One company only, by exact number; it does not say how a dissolution happened (see CompanyDissolutionOf).
   params:
     companyNumber:
+      required: true
       type: string
       description: "The Companies House company number."
   cypher: |
@@ -71,12 +75,14 @@
 
 - name: CompanyDissolutionOf
   description: >-
+    How one company was dissolved: voluntary or compulsory strike-off.
     How ONE company was closed, from its gazette filings — voluntary strike-off, compulsory
     strike-off, or an application to strike off. Company status says only 'dissolved'; this is the
     only place the register draws the distinction. Voluntary strike-off is a normal, lawful way to
     close a company that is no longer needed.
   params:
     companyNumber:
+      required: true
       type: string
       description: "The Companies House company number."
   cypher: |
@@ -96,12 +102,14 @@
 
 - name: CompanyInsolvencyOf
   description: >-
+    One company's insolvency record: cases, first date, practitioners.
     ONE company's insolvency record: case types, the first dated event and the appointed
     practitioners. Insolvency is a lawful statutory process — a company that cannot pay its debts
     is supposed to enter one — and a practitioner named here is an appointed professional, not a
     party to the company's conduct.
   params:
     companyNumber:
+      required: true
       type: string
       description: "The Companies House company number."
   cypher: |

@@ -1,7 +1,7 @@
 name: gov-uk
 description: >-
-  United Kingdom public-register realm, beginning with Director Web: a free, evidence-linked
-  navigator over Companies House officer records. Anchor an officer identifier and traverse every
+  UK public registers: Companies House officers, appointments, companies and filings, and a sanctions name check.
+  It begins with Director Web, a free, evidence-linked navigator over Companies House officer records. Anchor an officer identifier and traverse every
   appointment it holds — `MATCH (o:UkOfficerRecord {officerId:'<id>'})-[:HELD_APPOINTMENT]->(a:UkAppointment)`
   — which returns each company's name, number and status inline, so a whole passport is one call.
   Anchor a company number instead to expand it: `MATCH (c:UkCompany {companyNumber:'01234567'})`
@@ -18,7 +18,7 @@ description: >-
   grouping of underlying register entries rather than a raw filing. This realm reports what the
   register records and never characterises it: an appointment, a dissolution or a shared address
   is a sourced fact, not a finding.
-version: "0.1.0"
+version: "0.2.0"
 author: "Embabel"
 url: https://github.com/embabel/realm-gov-uk
 icon: icon.svg
