@@ -72,8 +72,7 @@
 
 - name: PossibleSamePersonRecords
   description: >-
-    Search candidates that might be one person under separate officer ids.
-    Groups of candidate records from one search that MIGHT be the same person: they share a
+    Groups of candidate records from one search that MIGHT be the same person. They share a
     recorded month and year of birth and at least one name word, but Companies House holds them
     under SEPARATE officer identifiers and has not linked them.
 
@@ -119,8 +118,7 @@
 
 - name: OfficerPassport
   description: >-
-    Headline counts for one Companies House officer record.
-    The headline account of ONE Companies House officer record: how many appointments it holds,
+    The headline account of ONE Companies House officer record. How many appointments it holds,
     how many are current, the span they cover, and how many distinct companies are involved. This
     describes a REGISTER RECORD, not a biography — and that record is itself Companies House's
     own grouping of underlying register entries, not a raw filing. Counts here are of recorded
@@ -154,8 +152,7 @@
 
 - name: OfficerAppointments
   description: >-
-    Every appointment fetched for one officer record, one row each.
-    Every appointment fetched for one officer record, one row each, with its company and dates.
+    Every appointment fetched for one officer record. One row each, with its company and dates.
     This is the drill-down behind any count on the passport: a user who reads "appears in 26
     companies" should reach these rows in one click and the official record in one more. A
     recorded appointment establishes a role for a period — not share ownership, not operational
