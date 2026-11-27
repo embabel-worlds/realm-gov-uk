@@ -25,6 +25,7 @@
     the count is a FLOOR — the register holds more.
   params:
     officerId:
+      required: true
       type: string
       description: "The Companies House officer identifier."
   cypher: |
@@ -43,6 +44,7 @@
 
 - name: SynchronousRoleChanges
   description: >-
+    Groups of one officer's resignations that fall close together in time.
     Groups of this officer's resignations that fall within a short window of each other, with the
     companies in each group. A cluster is a useful place to look — the companies may have been
     restructured, sold, wound up, or simply had a common year-end. The register states NO common
@@ -50,6 +52,7 @@
     resignation anchors its own window, so read them as neighbourhoods rather than a partition.
   params:
     officerId:
+      required: true
       type: string
       description: "The Companies House officer identifier."
     windowDays:
@@ -89,11 +92,12 @@
     question to resolve against the official list, and never as a label on anyone.
   params:
     surname:
+      required: true
       type: string
       description: "The family name to check, on its own."
   cypher: |
     MATCH (s:UkSanctionsCheck {surname: $surname})-[:POSSIBLE_MATCH]->(e:UkSanctionsEntry)
-    RETURN e.groupId              AS designationId,
+    RETURN e.uniqueId             AS designationId,
            trim(coalesce(e.title, '') + ' ' + coalesce(e.forename1, '') + ' '
                 + coalesce(e.forename2, '') + ' ' + coalesce(e.surname, '')) AS listedName,
            e.groupType            AS designationOf,

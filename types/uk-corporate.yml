@@ -35,7 +35,7 @@
   visibility: internal
   userAnchor: false
   description: >-
-    One recorded appointment of an officer to a company, as Companies House publishes it. Anchor
+    One recorded appointment of an officer to a company, as Companies House publishes it; it has no id of its own and is told apart by officerId + companyNumber + appointedOn. Anchor
     an officer identifier and traverse to every appointment it holds:
     `MATCH (o:UkOfficerRecord {officerId:'<id>'})-[:HELD_APPOINTMENT]->(a:UkAppointment)`.
     Each appointment carries its company's name, number and status inline, so a whole passport —
@@ -60,9 +60,11 @@
     officerId: "The Companies House officer identifier this appointment belongs to. Echoed from the fetch key."
     companyNumber: "Companies House number of the company appointed to. The exact join key to any company record."
     companyName: "The company's name as the register holds it now, not necessarily at appointment time."
-    companyStatus: "The company's CURRENT status, verbatim: active, dissolved, liquidation, administration, receivership, voluntary-arrangement, converted-closed, insolvency-proceedings, registered, removed, closed, open. There is no strike-off value here."
-    officerRole: "Verbatim role: director, secretary, llp-member, nominee-director, corporate-director, judicial-factor and 17 others. A 'director web' counts SOME of these; state which."
-    appointedOn: "Exact appointment date (ISO), where the register holds one. ABSENT for pre-1992 appointments — see appointedBefore."
+    companyStatus:
+      description: "The company's CURRENT status, verbatim, one of the register's closed set of 12. There is no strike-off value: the manner of a dissolution is only in filings."
+      values: [active, dissolved, liquidation, receivership, converted-closed, voluntary-arrangement, insolvency-proceedings, administration, open, closed, registered, removed]
+    officerRole: "Verbatim role, e.g. 'director', 'secretary', 'llp-member', 'llp-designated-member', 'nominee-director', 'corporate-director' (32 register roles). A 'director web' counts SOME of these; state which."
+    appointedOn: "Exact appointment date, ISO yyyy-MM-dd, where the register holds one. ABSENT for pre-1992 appointments — see appointedBefore."
     appointedBefore:
       description: >-
         An UPPER BOUND, present only when isPre1992Appointment is true: the officer was appointed
@@ -71,7 +73,7 @@
     isPre1992Appointment:
       type: boolean
       description: "True when the register holds only a bound rather than an appointment date."
-    resignedOn: "Resignation date (ISO) where recorded. Absent means the register shows no resignation, NOT that the role is confirmed current."
+    resignedOn: "Resignation date, ISO yyyy-MM-dd, where recorded. Absent means the register shows no resignation, NOT that the role is confirmed current."
     officerName: "The officer's name as recorded on this appointment. May vary between filings for the same person."
     nationality: "As recorded, where present."
     occupation: "As recorded, where present. Often absent."
@@ -84,7 +86,24 @@
       producer: officerAppointments
       description: >-
         Every appointment Companies House lists for one officer identifier, keyed by that
-        identifier. One call; the service caps a page at 50 appointments.
+        identifier, with each company's name, number and status inline. One call; the service caps
+        a page at 50 appointments, so an officer with more is read partially (a floor, not a total).
+  examples:
+    - q: "which companies has officer <id> been appointed to, and are they still active"
+      cypher: |
+        MATCH (o:UkOfficerRecord {officerId: 'mNJapaOxmblQiJZN4Gr-3vxWMHk'})-[:HELD_APPOINTMENT]->(a:UkAppointment)
+        RETURN a.companyNumber AS company, a.companyName AS name, a.companyStatus AS status,
+               a.officerRole AS role, a.appointedOn AS appointedOn, a.appointedBefore AS appointedBefore,
+               a.resignedOn AS resignedOn
+        ORDER BY coalesce(a.appointedOn, a.appointedBefore) DESC
+    - q: "who else sits on the boards of this officer's dissolved companies"
+      cypher: |
+        MATCH (o:UkOfficerRecord {officerId: 'mNJapaOxmblQiJZN4Gr-3vxWMHk'})-[:HELD_APPOINTMENT]->(a:UkAppointment)
+        WHERE a.companyStatus = 'dissolved'
+        WITH DISTINCT a.companyNumber AS companyNumber
+        MATCH (c:UkCompany {companyNumber: companyNumber})-[:HAS_OFFICER]->(co:UkCompanyOfficer)
+        RETURN companyNumber, co.officerName AS officer, co.officerRole AS role, co.appointedOn AS appointedOn,
+               co.resignedOn AS resignedOn
 
 # ---------------------------------------------------------------------------------------------
 # Company-anchored: the expansion paths. Each costs a call PER COMPANY, so a view must expand
@@ -103,12 +122,15 @@
   properties:
     companyNumber:
       metadata: { identity: "true" }
+      description: "Companies House company number this profile is for, e.g. '01234567', 'SC123456', 'OC350876'. Identity; echoed from the fetch key."
     companyName: "Current registered name."
-    companyStatus: "Verbatim status enum value."
+    companyStatus:
+      description: "The register's current status, verbatim, one of its closed set of 12. No strike-off value: whether a dissolution was voluntary is only in filings."
+      values: [active, dissolved, liquidation, receivership, converted-closed, voluntary-arrangement, insolvency-proceedings, administration, open, closed, registered, removed]
     companyStatusDetail: "Verbatim qualifier where present, e.g. active-proposal-to-strike-off. Usually absent, INCLUDING on dissolved companies."
     companyType: "Verbatim type, e.g. ltd, plc, llp."
-    dateOfCreation: "Incorporation date (ISO). The basis of any formation-cluster observation."
-    dateOfCessation: "Date the company was dissolved, closed or removed. Read alongside companyStatus to know which."
+    dateOfCreation: "Incorporation date, ISO yyyy-MM-dd. The basis of any formation-cluster observation."
+    dateOfCessation: "Date (ISO yyyy-MM-dd) the company was dissolved, closed or removed; absent while it exists. Read alongside companyStatus to know which."
     jurisdiction: "e.g. england-wales, scotland, northern-ireland."
     sicCodes: "SIC activity codes as published (a list)."
     registeredOfficeAddressLine1: "First line of the registered office, as rendered by the register."
@@ -116,23 +138,25 @@
     registeredOfficePostalCode: "Postcode of the registered office. A shared address is a NAVIGATION signal — it may simply be an accountant, solicitor or formation agent."
     hasInsolvencyHistory:
       type: boolean
-      description: "As published."
+      description: "True when the register holds any insolvency case for the company, current or past (see HAS_INSOLVENCY)."
     hasCharges:
       type: boolean
-      description: "As published."
+      description: "True when the register holds any charge (security such as a mortgage or debenture) against the company, satisfied or outstanding."
   virtualJoins:
     - anchorLabel: UkCompany
       relationship: HAS_PROFILE
       keyField: companyNumber
       recordKeyField: companyNumber
       producer: companyProfile
-      description: The company's own profile record, keyed by company number.
+      description: >-
+        The company's own register profile — status, type, incorporation and cessation dates,
+        SIC codes, registered office — one call per company number, cached six hours.
 
 - name: UkCompanyOfficer
   visibility: internal
   userAnchor: false
   description: >-
-    An officer recorded against one company, fetched by anchoring the company number:
+    An officer appointment recorded against one company, identified by `appointmentLink`, fetched by anchoring the company number:
     `MATCH (c:UkCompany {companyNumber:'01234567'})-[:HAS_OFFICER]->(o:UkCompanyOfficer)`.
     This is the CO-DIRECTOR path: two officers appearing on the same company is a recorded
     co-appointment, which may reflect an ordinary partnership, a professional service or a
@@ -156,12 +180,13 @@
       join key to the paid bulk products, and because an officerId spanning several person
       numbers is disclosable provenance about how that record was composed.
     officerName: "As recorded on this company."
-    officerRole: "Verbatim role."
-    appointedOn: "Exact date, where held."
-    appointedBefore: "Upper bound for pre-1992 appointments. Not a start date."
+    officerRole: "Verbatim register role, e.g. 'director', 'secretary', 'llp-member', 'corporate-director' (32 register roles)."
+    appointedOn: "Exact appointment date, ISO yyyy-MM-dd, where held. Absent for pre-1992 appointments."
+    appointedBefore: "Upper bound (ISO yyyy-MM-dd) for pre-1992 appointments: appointed some time before this date. Not a start date."
     isPre1992Appointment:
       type: boolean
-    resignedOn: "Where recorded."
+      description: "True when the register holds only an upper bound (appointedBefore), not an appointment date."
+    resignedOn: "Resignation date, ISO yyyy-MM-dd, where recorded; absent means no resignation recorded, not that the role is confirmed current."
     nationality: "As recorded."
     occupation: "As recorded."
   virtualJoins:
@@ -170,13 +195,15 @@
       keyField: companyNumber
       recordKeyField: companyNumber
       producer: companyOfficers
-      description: Every officer the register lists against one company, keyed by company number.
+      description: >-
+        Every officer the register lists against one company, current and resigned, oldest
+        appointment first — one call per company number (up to 500 officers). The co-director path.
 
 - name: UkPscRecord
   visibility: internal
   userAnchor: false
   description: >-
-    A person or entity with significant control over one company, exactly as the register records
+    A person or entity with significant control over one company, identified by `pscLink`, exactly as the register records
     it: `MATCH (c:UkCompany {companyNumber:'01234567'})-[:HAS_PSC]->(p:UkPscRecord)`.
     A PSC IS NOT A DIRECTOR and a director is not a PSC — never present either as the other, and
     never describe either as "the owner". Natures of control are codes; their official wording is
@@ -187,10 +214,10 @@
       description: "The register's own path to this PSC record — unique, and the exact evidence link."
     companyNumber: "Echoed from the fetch key."
     pscName: "As recorded."
-    kind: "The PSC kind, verbatim: individual-person-with-significant-control, corporate-entity-person-with-significant-control, legal-person-..., super-secure-... ."
+    kind: "PSC kind, verbatim: 'individual-person-with-significant-control', 'corporate-entity-person-with-significant-control', 'legal-person-person-with-significant-control' or 'super-secure-person-with-significant-control'."
     naturesOfControl: "Control codes as published (a list). Resolve to official wording; never paraphrase."
-    notifiedOn: "When the company notified this PSC (ISO)."
-    ceasedOn: "When the PSC ceased, where recorded."
+    notifiedOn: "Date (ISO yyyy-MM-dd) the company notified the register of this PSC."
+    ceasedOn: "Date (ISO yyyy-MM-dd) the PSC ceased to have control, where recorded; absent means no cessation is recorded."
     nationality: "As recorded, individuals only."
     countryOfResidence: "As recorded, individuals only."
   virtualJoins:
@@ -199,13 +226,15 @@
       keyField: companyNumber
       recordKeyField: companyNumber
       producer: companyPscs
-      description: The PSC records held against one company, keyed by company number.
+      description: >-
+        The persons with significant control recorded against one company, current and ceased —
+        one call per company number (up to 100). An empty answer is a real one: many companies have none.
 
 - name: UkFilingEvent
   visibility: internal
   userAnchor: false
   description: >-
-    One filing recorded against a company:
+    One filing recorded against a company, identified by `transactionId`:
     `MATCH (c:UkCompany {companyNumber:'01234567'})-[:HAS_FILING]->(f:UkFilingEvent)`.
     This type exists because the MANNER OF DISSOLUTION lives nowhere else: company status says
     only 'dissolved', while the gazette filings distinguish voluntary from compulsory strike-off.
@@ -217,15 +246,14 @@
       description: "The register's own filing transaction id — unique across the register."
     companyNumber: "Echoed from the fetch key."
     category: >-
-      Verbatim category. The live vocabulary is OPEN and exceeds the published enum — gazette
-      and dissolution, the two this feature needs, are both absent from it. Never validate
-      against a fixed list.
+      Verbatim category: 'gazette' or 'dissolution', the only two this realm asks for. (Both are
+      absent from the register's published category enum, which is stale.)
     filingType: "Form type, e.g. GAZ1, GAZ2, DS01."
     filingDescription: >-
       The register's description code, e.g. gazette-dissolved-voluntary,
       gazette-dissolved-compulsory, dissolution-application-strike-off-company. Resolve to
       official wording via apis/companies-house/enumerations/filing_history_descriptions.yml.
-    filingDate: "Date of the filing (ISO)."
+    filingDate: "Date (ISO yyyy-MM-dd) the register recorded the filing."
   virtualJoins:
     - anchorLabel: UkCompany
       relationship: HAS_FILING
@@ -245,7 +273,7 @@
   visibility: internal
   userAnchor: false
   description: >-
-    A candidate officer record matching a name search:
+    A candidate officer record matching a name search, identified by `officerLink`:
     `MATCH (s:UkOfficerSearch {query:'<name>'})-[:FOUND]->(c:UkOfficerCandidate)`.
     THESE ARE LEADS, NOT IDENTITIES. Companies House can hold several officer records with the
     same name, including separate records that may refer to the same person, and matching a name
@@ -260,16 +288,16 @@
         search response has NO officer id field — this link is the only carrier, and its third
         segment is the id a passport anchors on. Views split it; a projection cannot.
     query: "The search phrase that produced this candidate. Echoed from the fetch key."
-    candidateName: "The matched name as the register renders it for search results."
+    candidateName: "The matched name as the register renders it for search results; the date of birth is in separate fields."
     appointmentCount:
       type: int
       description: "How many appointments the register holds for this candidate — the most useful disambiguator."
     dateOfBirthMonth:
       type: int
-      description: "Birth month. The register publishes month and year only; that is its own privacy posture and we do not narrow it further."
+      description: "Birth month, 1-12. The register publishes month and year of birth only, never the day: its own privacy posture."
     dateOfBirthYear:
       type: int
-      description: "Birth year."
+      description: "Four-digit year of birth, e.g. 1968. With the month, all of the date of birth the register publishes (never the day)."
     addressSnippet: "A single-line address as the register renders it for search results."
     description: "The register's own one-line summary of the candidate."
   virtualJoins:
@@ -278,13 +306,15 @@
       keyField: query
       recordKeyField: query
       producer: officerSearch
-      description: Candidate officer records for a name, keyed by the search phrase.
+      description: >-
+        Candidate officer records whose name matches the search phrase, best match first — one
+        call per phrase, the first 20 only. Leads to choose between, never one person.
 
 - name: UkSectorDissolutions
   visibility: internal
   userAnchor: false
   description: >-
-    An anchor for one SECTOR read of dissolved companies: pin a SIC code to reach the companies
+    An anchor for one SECTOR read of dissolved companies, keyed by `sicCode`: pin a SIC code to reach the companies
     the register now records as dissolved in that activity. The only anchor in this realm that
     starts from an activity rather than an identifier — the seed for any sweep, and the reason
     a phoenix-succession question can begin without a name in hand.
@@ -297,7 +327,7 @@
   visibility: internal
   userAnchor: false
   description: >-
-    One dissolved company in a sector read:
+    One dissolved company in a sector read, identified by `companyNumber`:
     `MATCH (s:UkSectorDissolutions {sicCode:'41201'})-[:FOUND]->(d:UkDissolvedCompany)`.
     A BOUNDED SAMPLE, never the sector: the register holds tens of thousands of dissolved
     companies per code (53,420 for 41201 on 2026-09-11) and one read returns the page the
@@ -310,10 +340,12 @@
       description: "Companies House company number. Identity, and the seed for a UkCompany anchor."
     sicCode: "The SIC code searched. Echoed from the fetch key."
     companyName: "The company's name as the register holds it."
-    companyStatus: "The register's CURRENT status — 'dissolved' by construction of this read."
-    companyType: "The register's company type, e.g. 'ltd'."
-    dateOfCreation: "Incorporation date (ISO)."
-    dateOfCessation: "Dissolution date (ISO) — present on this endpoint, absent from the officer-anchored path."
+    companyStatus:
+      description: "The register's CURRENT status — 'dissolved' by construction of this read."
+      values: [active, dissolved, liquidation, receivership, converted-closed, voluntary-arrangement, insolvency-proceedings, administration, open, closed, registered, removed]
+    companyType: "The register's company type, verbatim, e.g. 'ltd', 'plc', 'llp', 'private-limited-guarant-nsc'. An equality on it is asked of the register."
+    dateOfCreation: "Incorporation date, ISO yyyy-MM-dd. A >= / <= bound on it is asked of the register."
+    dateOfCessation: "Dissolution date, ISO yyyy-MM-dd — present on this endpoint, absent from the officer-anchored path. A >= / <= bound is asked of the register."
     locality: "The registered office's locality, as the register renders it."
   virtualJoins:
     - anchorLabel: UkSectorDissolutions
@@ -321,7 +353,18 @@
       keyField: sicCode
       recordKeyField: sicCode
       producer: companySectorSearch
-      description: Dissolved companies in one SIC code, keyed by the code. A bounded page, not the sector.
+      description: >-
+        Dissolved companies in one SIC code, one call per code, at most 100 — a bounded page, not
+        the sector. A company type or a dissolution/incorporation date window in the WHERE is asked
+        of the register, so a window narrows the page rather than filtering it afterwards.
+  examples:
+    - q: "private limited building firms dissolved in January 2025"
+      cypher: |
+        MATCH (s:UkSectorDissolutions {sicCode: '41201'})-[:FOUND]->(d:UkDissolvedCompany)
+        WHERE d.companyType = 'ltd' AND d.dateOfCessation >= '2025-01-01' AND d.dateOfCessation <= '2025-01-31'
+        RETURN d.companyNumber AS company, d.companyName AS name, d.dateOfCreation AS incorporated,
+               d.dateOfCessation AS dissolved, d.locality AS locality
+        ORDER BY dissolved DESC
 
 # ---------------------------------------------------------------------------------------------
 # Seeded reference. Not fetched from anywhere: a small static catalogue, loaded from
@@ -361,7 +404,7 @@
   visibility: internal
   userAnchor: false
   description: >-
-    An anchor for one Companies House officer identifier. Pin it to reach that record's
+    An anchor for one Companies House officer identifier, keyed by `officerId`. Pin it to reach that record's
     appointments. It holds no data itself — the identifier IS the record, and that identifier is
     Companies House's own grouping of underlying register entries rather than a raw filing.
   properties:
@@ -385,7 +428,7 @@
   visibility: internal
   userAnchor: false
   description: >-
-    An anchor for one officer NAME SEARCH. Pin a name to reach its candidate records. Candidates
+    An anchor for one officer NAME SEARCH, keyed by `query`. Pin a name to reach its candidate records. Candidates
     are leads for a person to choose between, never an identity.
   properties:
     query:
@@ -396,7 +439,7 @@
   visibility: internal
   userAnchor: false
   description: >-
-    One company's insolvency record, fetched by anchoring its number:
+    One company's insolvency record, identified by `companyNumber`, fetched by anchoring its number:
     `MATCH (c:UkCompany {companyNumber:'01234567'})-[:HAS_INSOLVENCY]->(i:UkInsolvencyRecord)`.
     Insolvency is a LAWFUL LEGAL PROCESS with its own statutory procedure — a liquidation or an
     administration is not a finding against a director, and appointing an insolvency practitioner
@@ -410,11 +453,11 @@
         The company this record belongs to. ONE record per company rather than one per case: a
         case is numbered within its own company (1, 2, 3), so a per-case node would have no
         identity that is unique across companies, and a projection cannot mint a composite.
-    insolvencyStatus: "The register's own status words for the record (a list)."
+    insolvencyStatus: "The register's own status words (a list), e.g. 'liquidation', 'in-administration', 'voluntary-arrangement', 'live-receiver-manager-on-at-least-one-charge'. Sometimes absent."
     caseTypes: "Verbatim case types (a list), e.g. compulsory-liquidation, creditors-voluntary-liquidation, administration."
     caseNumbers: "The case numbers, within this company (a list)."
     firstCaseDateType: "What the first case's first date MEANS, verbatim, e.g. wound-up-on."
-    firstCaseDate: "That date (ISO). Only the FIRST case's first date is projected — see the producer note."
+    firstCaseDate: "That date, ISO yyyy-MM-dd. Only the FIRST case's first date is projected — see the producer note."
     firstCasePractitioners: "Names of the insolvency practitioners on the first case (a list). A practitioner is an appointed professional, not a party to the company's conduct."
   virtualJoins:
     - anchorLabel: UkCompany
@@ -422,13 +465,15 @@
       keyField: companyNumber
       recordKeyField: companyNumber
       producer: companyInsolvency
-      description: The company's insolvency cases, keyed by company number.
+      description: >-
+        The company's insolvency record — status, case types and numbers, the first case's date
+        and practitioners — one call per company number. No record is a real answer for most companies.
 
 - name: UkSanctionsEntry
   visibility: internal
   userAnchor: false
   description: >-
-    A designation on the UK sanctions list, reached by checking ONE SURNAME:
+    A designation on the UK Sanctions List, identified by `uniqueId`, reached by checking ONE SURNAME:
     `MATCH (s:UkSanctionsCheck {surname:'<surname>'})-[:POSSIBLE_MATCH]->(e:UkSanctionsEntry)`.
 
     THIS IS A NAME MATCH AND NOTHING MORE, and the edge is named to say so. The list publishes no
@@ -438,36 +483,42 @@
     about. Treat every row as a question for a human to resolve against the official list, never
     as a statement that anyone is sanctioned, and never let one near a total or a badge.
   properties:
-    groupId:
+    uniqueId:
       metadata: { identity: "true" }
-      description: "OFSI's group identifier for the designated person or entity. Aliases share it, so one entry is one designation."
+      description: "The list's Unique ID for the designation, e.g. 'AFG0001' (regime prefix + number). Aliases share it, so one entry is one designation. Identity."
+    groupId:
+      description: "OFSI's group identifier for the designated person or entity, where the list gives one; blank on a few thousand rows, so it is not the identity."
     surnameQueried: "The surname this entry was matched against. Echoed from the fetch key."
     surname: "Family name as listed."
     forename1: "First given name as listed."
     forename2: "Second given name as listed."
     title: "Title as listed."
-    groupType: "Individual, Entity or Ship."
-    regime: "The sanctions regime under which the designation was made."
-    dateOfBirth: "Date of birth where the list publishes one — the single most useful thing for ruling a match OUT."
+    groupType:
+      description: "What is designated: 'Individual', 'Entity' or 'Ship'."
+      values: [Individual, Entity, Ship]
+    regime: "The regulations the designation was made under, verbatim, e.g. 'The Russia (Sanctions) (EU Exit) Regulations 2019'."
+    dateOfBirth: "Date of birth as the list writes it, dd/MM/yyyy (sometimes partial, e.g. dd/mm/1960), where published — the most useful thing for ruling a match OUT."
     nationality: "As listed."
     countryOfBirth: "As listed."
     position: "Stated position or role, where listed."
     statementOfReasons: "The UK statement of reasons for the designation, verbatim."
-    listedOn: "When the designation was made."
-    lastUpdated: "When the entry was last amended."
+    listedOn: "Date the designation was made, as the list writes it: dd/MM/yyyy (a string, so compare it as a date only after parsing)."
+    lastUpdated: "Date the entry was last amended, as the list writes it: dd/MM/yyyy."
   virtualJoins:
     - anchorLabel: UkSanctionsCheck
       relationship: POSSIBLE_MATCH
       keyField: surname
       recordKeyField: surnameQueried
       producer: sanctionsBySurname
-      description: Designations whose family name matches the surname checked. A lead, never a finding.
+      description: >-
+        Designations whose family name (or an alias's) equals the surname checked, ignoring case —
+        read from the whole published list, cached six hours. A lead, never a finding.
 
 - name: UkSanctionsCheck
   visibility: internal
   userAnchor: false
   description: >-
-    An anchor for one surname being checked against the UK sanctions list. Pin a surname to see
+    An anchor for one surname being checked against the UK sanctions list, keyed by `surname`. Pin a surname to see
     designations sharing it. The check is by name only.
   properties:
     surname:

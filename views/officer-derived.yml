@@ -12,6 +12,7 @@
 
 - name: OfficerPhoenixChain
   description: >-
+    An officer's appointments that follow their own now-dissolved companies.
     This officer's appointments that follow their own appointment at a company the register NOW
     records as dissolved, with `dissolvedPredecessors` counting how many such predecessors the
     chain holds. One failed company is ordinary; the default threshold of 2 shows repetition only.
@@ -24,6 +25,7 @@
     Cost is one read of this officer's record, which the passport has usually already paid for.
   params:
     officerId:
+      required: true
       type: string
       description: "Companies House officer identifier — the one the appointments URL carries."
     minDepth:
@@ -45,6 +47,7 @@
 
 - name: OfficerSharedFailures
   description: >-
+    Officer pairs who share several of the given dissolved companies.
     Officers who appear alongside one another at several of the same now-dissolved companies. An
     edge Companies House does not publish: the register records appointments, and two officers are
     connected only because the same company appears in both records.
@@ -68,6 +71,7 @@
     grows with the number of companies passed. Pass a handful.
   params:
     companyNumbers:
+      required: true
       type: string
       description: "Comma-separated Companies House numbers of DISSOLVED companies to fan out from, e.g. `SC417296,SC352135`. Keep it short: each one costs reads."
     minShared:

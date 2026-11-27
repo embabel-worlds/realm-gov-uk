@@ -16,7 +16,7 @@
 
 - name: PhoenixBySector
   description: >-
-    Officers of the most recently dissolved companies in a SIC sector, ranked by the longest
+    Officers of the most recently dissolved companies in a SIC sector. Ranked by the longest
     chain of dissolved predecessors any of their appointments carries (`longestChain`), with
     how many of their appointments follow a now-dissolved company (`successions`) and how many
     of those are at companies still active (`liveCompaniesInChain`). Reaches the register live

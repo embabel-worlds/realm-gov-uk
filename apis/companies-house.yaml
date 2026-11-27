@@ -73,6 +73,26 @@ paths:
           in: query
           description: Results to return, up to 5000.
           schema: { type: integer }
+        - name: company_type
+          in: query
+          description: A register company type code, e.g. ltd, plc, llp. An unknown code is a 400.
+          schema: { type: string }
+        - name: dissolved_from
+          in: query
+          description: Earliest dissolution date, yyyy-MM-dd, inclusive.
+          schema: { type: string }
+        - name: dissolved_to
+          in: query
+          description: Latest dissolution date, yyyy-MM-dd, inclusive.
+          schema: { type: string }
+        - name: incorporated_from
+          in: query
+          description: Earliest incorporation date, yyyy-MM-dd, inclusive.
+          schema: { type: string }
+        - name: incorporated_to
+          in: query
+          description: Latest incorporation date, yyyy-MM-dd, inclusive.
+          schema: { type: string }
       responses:
         "200":
           description: Matching companies, with `hits` as the total the page was cut from.
